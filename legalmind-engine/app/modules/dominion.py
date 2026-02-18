@@ -59,6 +59,12 @@ class Dominion:
                 segments = self.conversion.ingest_pdf_layout(file_path, file_hash)
             elif "word" in mime_type or "docx" in mime_type or "officedocument" in mime_type:
                 segments = self.conversion.ingest_docx(file_path, file_hash)
+            elif "audio" in mime_type:
+                segments = self.conversion.ingest_audio(file_path, file_hash)
+            elif "video" in mime_type:
+                segments = self.conversion.ingest_video(file_path, file_hash)
+            elif "image" in mime_type:
+                segments = self.conversion.ingest_image(file_path, file_hash)
             else:
                 self.case_context.audit_log.log_event("Dominion", "ingest_skip_unsupported", {"mime": mime_type})
 

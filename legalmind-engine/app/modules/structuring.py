@@ -58,6 +58,9 @@ class Structuring:
         pass
 
     def modality_router(self, segments: List[EvidenceSegment]):
+        # In the future, this could route to different chunking strategies based on modality
+        # e.g., Audio might need overlapping windows based on silence, not just text split.
+        # For now, structural_chunker handles all via text attribute.
         pass
 
     def chunk_indexer(self, chunks: List[Chunk]):

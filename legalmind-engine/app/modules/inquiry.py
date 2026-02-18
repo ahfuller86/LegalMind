@@ -15,7 +15,23 @@ class Inquiry:
         ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
         collection = client.get_or_create_collection(name=f"case_{self.case_context.case_id}", embedding_function=ef)
 
-        results = collection.query(query_texts=[claim.text], n_results=3)
+        where_filter = None
+        filter_applied = False
+        if claim.expected_modality:
+            # Map expected modality to Modality enum string if possible
+            # Simplified mapping for now
+            if claim.expected_modality == "video":
+                where_filter = {"modality": "video_transcript"}
+                filter_applied = True
+            elif claim.expected_modality == "testimony":
+                where_filter = {"modality": "audio_transcript"}
+                filter_applied = True
+
+        results = collection.query(
+            query_texts=[claim.text],
+            n_results=3,
+            where=where_filter
+        )
 
         chunks = []
         scores = []
@@ -43,7 +59,7 @@ class Inquiry:
             chunks=chunks,
             retrieval_scores=scores,
             retrieval_mode=RetrievalMode.SEMANTIC,
-            modality_filter_applied=False,
+            modality_filter_applied=filter_applied,
             retrieval_warnings=[]
         )
 

@@ -18,3 +18,7 @@ annotated-types
 reportlab
 eyecite
 weasyprint
+openai-whisper
+ffmpeg-python
+pytesseract
+Pillow
