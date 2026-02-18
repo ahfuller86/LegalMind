@@ -140,3 +140,34 @@ async def test_audit_workflow(dominion, test_data):
     assert final_state.status == RunStatus.COMPLETE, f"Audit failed: {final_state.warnings}"
     assert "report_path" in final_state.result_payload
     assert os.path.exists(final_state.result_payload["report_path"])
+
+@pytest.mark.asyncio
+async def test_audit_workflow_formats(dominion, test_data):
+    docx_path, _ = test_data
+
+    # 1. Ingest
+    ingest_state = await dominion.workflow_ingest_case(docx_path)
+    for _ in range(30):
+        await asyncio.sleep(0.5)
+        state = dominion.get_job_status(ingest_state.run_id)
+        if state and state.status == RunStatus.COMPLETE:
+            break
+
+    # 2. Audit
+    audit_state = await dominion.workflow_audit_brief(docx_path)
+
+    final_state = None
+    for _ in range(30):
+        await asyncio.sleep(0.5)
+        state = dominion.get_job_status(audit_state.run_id)
+        if state and state.status in [RunStatus.COMPLETE, RunStatus.FAILED]:
+            final_state = state
+            break
+
+    assert final_state.status == RunStatus.COMPLETE
+
+    # Check for all report formats
+    base_dir = dominion.case_context.base_path
+    assert os.path.exists(os.path.join(base_dir, "report.html"))
+    assert os.path.exists(os.path.join(base_dir, "report.docx"))
+    assert os.path.exists(os.path.join(base_dir, "report.pdf"))

@@ -2,6 +2,7 @@ import os
 import pickle
 from typing import List, Dict, Any
 from app.core.stores import CaseContext
+from app.core.config import load_config
 from app.models import Chunk
 import chromadb
 from chromadb.utils import embedding_functions
@@ -10,8 +11,21 @@ from rank_bm25 import BM25Okapi
 class Preservation:
     def __init__(self, case_context: CaseContext):
         self.case_context = case_context
+        self.config = load_config()
         self.chroma_client = chromadb.PersistentClient(path=os.path.join(self.case_context.index.index_path, "chroma"))
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+
+        # Select embedding function based on config
+        if self.config.EMBEDDING_PROVIDER == "sentence-transformers":
+            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        elif self.config.EMBEDDING_PROVIDER == "openai":
+             self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                model_name="text-embedding-3-small"
+            )
+        else:
+            # Fallback or local custom
+            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+
         self.collection = self.chroma_client.get_or_create_collection(
             name=f"case_{self.case_context.case_id}",
             embedding_function=self.embedding_fn
@@ -71,6 +85,7 @@ class Preservation:
             "status": "healthy" if count > 0 else "empty",
             "stats": {
                 "chunk_count": count,
-                "bm25_active": self.bm25_index is not None
+                "bm25_active": self.bm25_index is not None,
+                "embedding_provider": self.config.EMBEDDING_PROVIDER
             }
         }

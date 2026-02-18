@@ -22,3 +22,4 @@ openai-whisper
 ffmpeg-python
 pytesseract
 Pillow
+pydantic-settings

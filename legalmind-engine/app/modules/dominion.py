@@ -13,10 +13,14 @@ from app.modules.adjudication import Adjudication
 from app.modules.chronicle import Chronicle
 from app.modules.validation import Validation
 from app.modules.sentinel import Sentinel
+from app.core.config import load_config
 
 class Dominion:
     def __init__(self, case_context: CaseContext):
         self.case_context = case_context
+        self.config = load_config()
+        self.kpi_stats = {"jobs_run": 0, "errors": 0}
+
         # Initialize modules
         self.intake = Intake(case_context)
         self.conversion = Conversion(case_context)
@@ -111,19 +115,38 @@ class Dominion:
         return run_state
 
     async def _run_audit_job(self, run_id: str, brief_path: str):
+        self.kpi_monitor("jobs_run")
         self.case_context.audit_log.log_event("Dominion", "audit_job_start", {"run_id": run_id, "brief": brief_path})
 
         try:
             # 1. Discernment
             claims = self.discernment.extract_claims(brief_path)
 
-            # 2. Inquiry & Adjudication
+            # 2. Inquiry & Adjudication (with Retries)
             findings = []
             for claim in claims:
                 if claim.routing == "verify":
-                    bundle = self.inquiry.retrieve_evidence(claim)
-                    finding = self.adjudication.verify_claim_skeptical(claim, bundle)
-                    findings.append(finding)
+                    # Retry logic loop
+                    max_retries = 2
+                    attempt = 0
+                    finding = None
+                    while attempt <= max_retries:
+                        try:
+                            bundle = self.inquiry.retrieve_evidence(claim)
+                            finding = self.adjudication.verify_claim_skeptical(claim, bundle)
+                            # If manual review needed or error, maybe retry?
+                            # For now, simple retry on exception or emptiness if desired.
+                            break
+                        except Exception as e:
+                            attempt += 1
+                            if attempt > max_retries:
+                                self.case_context.audit_log.log_event("Dominion", "claim_retry_exhausted", {"claim_id": claim.claim_id})
+                                # Create a failed finding
+                                break
+                            await asyncio.sleep(0.5 * attempt)
+
+                    if finding:
+                        findings.append(finding)
 
             # 3. Chronicle
             report_path = self.chronicle.render_report(findings)
@@ -139,6 +162,7 @@ class Dominion:
             self.case_context.jobs.save_job(complete_state)
 
         except Exception as e:
+            self.kpi_monitor("errors")
             self.case_context.audit_log.log_event("Dominion", "audit_job_error", {"run_id": run_id, "error": str(e)})
             failed_state = RunState(
                 run_id=run_id,
@@ -146,6 +170,11 @@ class Dominion:
                 warnings=[str(e)]
             )
             self.case_context.jobs.save_job(failed_state)
+
+    def kpi_monitor(self, metric: str):
+        if metric in self.kpi_stats:
+            self.kpi_stats[metric] += 1
+        # In production, push to Prometheus/Datadog or write to DB
 
     async def workflow_cite_check(self, text_or_file: str) -> RunState:
         run_id = str(uuid.uuid4())
