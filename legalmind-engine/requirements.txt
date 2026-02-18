@@ -16,3 +16,5 @@ rank_bm25
 litellm
 annotated-types
 reportlab
+eyecite
+weasyprint
