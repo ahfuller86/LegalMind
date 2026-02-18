@@ -25,6 +25,11 @@ try:
 except ImportError:
     ffmpeg = None
 
+try:
+    from pdf2image import convert_from_path
+except ImportError:
+    convert_from_path = None
+
 class Conversion:
     def __init__(self, case_context: CaseContext):
         self.case_context = case_context
@@ -46,7 +51,7 @@ class Conversion:
             with pdfplumber.open(file_path) as pdf:
                 for i, page in enumerate(pdf.pages):
                     text = page.extract_text()
-                    if text:
+                    if text and len(text.strip()) > 50:
                         segment = EvidenceSegment(
                             segment_id=str(uuid.uuid4()),
                             source_asset_id=source_asset_id,
@@ -60,6 +65,14 @@ class Conversion:
                         )
                         segments.append(segment)
                         self.case_context.ledger.append_segment(segment)
+                    else:
+                        # Fallback to OCR for this page if possible
+                        # Extract single page as image?
+                        # pdf2image converts whole PDF or ranges.
+                        # For simplicity/efficiency, we might just mark for OCR or do it here.
+                        # Calling internal helper
+                        ocr_segments = self._ocr_page_fallback(file_path, i+1, source_asset_id)
+                        segments.extend(ocr_segments)
 
                     # Basic table extraction (can be improved)
                     tables = page.extract_tables()
@@ -192,12 +205,66 @@ class Conversion:
 
         return segments
 
-    def ingest_ocr_printed(self, file_path: str, source_asset_id: str):
-        # For scanned PDFs, usually handled by pdfplumber or needs conversion to images then OCR
-        # pdfplumber can extract text if it's there. If it's pure image PDF, we need OCR.
-        # Simple implementation: convert PDF to images (requires poppler/pdf2image) -> OCR.
-        # Given env constraints, we skip complex PDF OCR for now or reuse ingest_image logic if single page image.
-        pass
+    def ingest_ocr_printed(self, file_path: str, source_asset_id: str) -> List[EvidenceSegment]:
+        # Explicit OCR ingestion for a file (PDF or Image)
+        # Convert PDF to images -> OCR
+        segments = []
+        if not convert_from_path or not pytesseract or shutil.which("tesseract") is None:
+            print("OCR tools missing")
+            return segments
+
+        try:
+            images = convert_from_path(file_path)
+            for i, image in enumerate(images):
+                text = pytesseract.image_to_string(image)
+                if text.strip():
+                    segment = EvidenceSegment(
+                        segment_id=str(uuid.uuid4()),
+                        source_asset_id=source_asset_id,
+                        modality=Modality.OCR_PRINTED,
+                        location=f"page_{i+1}",
+                        text=text.strip(),
+                        confidence=0.85,
+                        extraction_method="tesseract",
+                        derived=False,
+                        warnings=["Scanned Document OCR"]
+                    )
+                    segments.append(segment)
+                    self.case_context.ledger.append_segment(segment)
+        except Exception as e:
+            print(f"OCR failed for {file_path}: {e}")
+
+        return segments
+
+    def _ocr_page_fallback(self, file_path: str, page_num: int, source_asset_id: str) -> List[EvidenceSegment]:
+        # Helper to OCR a specific page.
+        # pdf2image is efficient enough to get one page
+        segments = []
+        if not convert_from_path or not pytesseract or shutil.which("tesseract") is None:
+            return segments
+
+        try:
+            # pdf2image uses 1-based indexing for first_page/last_page
+            images = convert_from_path(file_path, first_page=page_num, last_page=page_num)
+            if images:
+                text = pytesseract.image_to_string(images[0])
+                if text.strip():
+                    segment = EvidenceSegment(
+                        segment_id=str(uuid.uuid4()),
+                        source_asset_id=source_asset_id,
+                        modality=Modality.OCR_PRINTED,
+                        location=f"page_{page_num}",
+                        text=text.strip(),
+                        confidence=0.8,
+                        extraction_method="pdf_fallback_ocr",
+                        derived=False,
+                        warnings=["Fallback OCR used"]
+                    )
+                    segments.append(segment)
+                    self.case_context.ledger.append_segment(segment)
+        except Exception as e:
+            print(f"Fallback OCR failed for page {page_num}: {e}")
+        return segments
 
     def ingest_handwriting(self, file_path: str, source_asset_id: str):
         # Requires Vision LLM. Stub for now.
