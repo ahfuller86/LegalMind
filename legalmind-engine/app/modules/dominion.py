@@ -271,3 +271,49 @@ class Dominion:
 
         self.case_context.audit_log.log_event("Dominion", "case_workspace_init_complete", {"path": new_context.base_path})
         return {"status": "initialized", "path": new_context.base_path}
+
+    async def workflow_background_maintenance(self) -> RunState:
+        run_id = str(uuid.uuid4())
+        run_state = RunState(run_id=run_id, status=RunStatus.RUNNING, progress=0.0)
+        self.case_context.jobs.save_job(run_state)
+        asyncio.create_task(self._run_maintenance_job(run_id))
+        return run_state
+
+    async def _run_maintenance_job(self, run_id: str):
+        self.case_context.audit_log.log_event("Dominion", "maintenance_job_start", {"run_id": run_id})
+        try:
+            # 1. Fetch all segments (IO bound)
+            segments = await asyncio.to_thread(self.case_context.ledger.get_all_segments)
+
+            # 2. Filter for draft quality
+            draft_segments = [s for s in segments if s.metadata.get("transcription_quality") == "draft"]
+
+            total_drafts = len(draft_segments)
+            processed_count = 0
+
+            self.case_context.audit_log.log_event("Dominion", "maintenance_scan", {"found_drafts": total_drafts})
+
+            # 3. Refine sequentially
+            # Since this is "maintenance", we do it sequentially to save resources.
+            for seg in draft_segments:
+                await asyncio.to_thread(self.conversion.refine_transcription, seg)
+
+                # Check if upgraded
+                if seg.metadata.get("transcription_quality") == "final":
+                    # Save update
+                    await asyncio.to_thread(self.case_context.ledger.update_segment, seg)
+                    processed_count += 1
+
+            self.case_context.audit_log.log_event("Dominion", "maintenance_job_complete", {"processed": processed_count})
+
+            complete_state = RunState(
+                run_id=run_id,
+                status=RunStatus.COMPLETE,
+                progress=1.0,
+                result_payload={"upgraded_segments": processed_count}
+            )
+            self.case_context.jobs.save_job(complete_state)
+
+        except Exception as e:
+            self.case_context.audit_log.log_event("Dominion", "maintenance_error", {"error": str(e)})
+            self.case_context.jobs.save_job(RunState(run_id=run_id, status=RunStatus.FAILED, warnings=[str(e)]))

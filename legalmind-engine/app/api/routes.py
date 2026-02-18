@@ -190,3 +190,19 @@ async def report_render(
     if run_id:
         return RunState(run_id=run_id, status=RunStatus.COMPLETE, result_payload={"path": "/tmp/report.html"})
     return RunState(run_id="report_job_1", status=RunStatus.RUNNING)
+
+# --- Maintenance ---
+
+@router.post("/maintenance/upgrade-transcripts", response_model=RunState)
+async def maintenance_upgrade_transcripts(
+    run_id: Optional[str] = Body(None, embed=True),
+    dominion: Dominion = Depends(get_dominion)
+):
+    if run_id:
+        job = dominion.get_job_status(run_id)
+        if job:
+            return job
+        else:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+    return await dominion.workflow_background_maintenance()

@@ -1,5 +1,7 @@
 import os
 import json
+import shutil
+import hashlib
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from app.models import EvidenceSegment, Chunk, RunState, RunStatus
@@ -34,10 +36,33 @@ class EvidenceVault:
         os.makedirs(self.vault_path, exist_ok=True)
 
     def store_file(self, filename: str, content: bytes, metadata: Dict[str, Any]) -> str:
-        # returns file_id (hash)
-        return "not_implemented"
+        sha256_hash = hashlib.sha256(content).hexdigest()
+        file_path = os.path.join(self.vault_path, sha256_hash)
+
+        if not os.path.exists(file_path):
+            with open(file_path, "wb") as f:
+                f.write(content)
+
+        return sha256_hash
+
+    def store_file_from_path(self, source_path: str) -> str:
+        sha256_hash = hashlib.sha256()
+        with open(source_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        file_hash = sha256_hash.hexdigest()
+
+        target_path = os.path.join(self.vault_path, file_hash)
+        if not os.path.exists(target_path):
+            shutil.copy2(source_path, target_path)
+
+        return file_hash
 
     def get_file(self, file_id: str) -> bytes:
+        file_path = os.path.join(self.vault_path, file_id)
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                return f.read()
         return b""
 
 class EvidenceLedger:
@@ -66,6 +91,31 @@ class EvidenceLedger:
                 except json.JSONDecodeError:
                     continue
         return segments
+
+    def update_segment(self, updated_segment: EvidenceSegment):
+        """
+        Updates an existing segment by rewriting the JSONL file.
+        Note: This is not concurrency-safe for high-volume parallel writes.
+        Intended for maintenance tasks.
+        """
+        all_segments = self.get_all_segments()
+        found = False
+        new_segments = []
+
+        for seg in all_segments:
+            if seg.segment_id == updated_segment.segment_id:
+                new_segments.append(updated_segment)
+                found = True
+            else:
+                new_segments.append(seg)
+
+        if found:
+            # Atomic write pattern: write to temp, then rename
+            temp_file = self.segments_file + ".tmp"
+            with open(temp_file, "w") as f:
+                for seg in new_segments:
+                    f.write(seg.model_dump_json() + "\n")
+            os.replace(temp_file, self.segments_file)
 
     def get_all_segments(self) -> List[EvidenceSegment]:
         segments = []

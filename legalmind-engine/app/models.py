@@ -73,6 +73,7 @@ class EvidenceSegment(BaseModel):
     extraction_method: str
     derived: bool
     warnings: List[str] = []
+    metadata: Dict[str, Any] = {}
 
 class Chunk(BaseModel):
     chunk_id: str
