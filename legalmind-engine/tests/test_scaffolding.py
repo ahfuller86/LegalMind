@@ -18,15 +18,12 @@ def test_evidence_ingest_start():
     response = client.post("/api/evidence/ingest", json={"file_path": "/tmp/test.pdf"})
     assert response.status_code == 200
     data = response.json()
-    assert data["run_id"] == "dummy_ingest_run_id"
+    assert data["run_id"]
     assert data["status"] == "running"
 
 def test_evidence_ingest_poll():
     response = client.post("/api/evidence/ingest", json={"run_id": "dummy_ingest_run_id"})
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "running"
-    assert data["items_processed"] == 5
+    assert response.status_code == 404
 
 def test_prefile_run():
     response = client.post("/api/prefile/run", json={"brief_path": "/tmp/brief.docx"})

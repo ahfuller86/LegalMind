@@ -45,7 +45,14 @@ async def evidence_ingest(
     dominion: Dominion = Depends(get_dominion)
 ):
     if run_id:
-        return RunState(run_id=run_id, status=RunStatus.RUNNING, items_processed=5, items_total=10)
+        job = dominion.get_job_status(run_id)
+        if job:
+            return job
+        else:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+    if not file_path:
+        raise HTTPException(status_code=400, detail="file_path required")
     return await dominion.workflow_ingest_case(file_path)
 
 @router.post("/index/chunk", response_model=RunState)
@@ -87,7 +94,14 @@ async def audit_run(
     dominion: Dominion = Depends(get_dominion)
 ):
     if run_id:
-        return RunState(run_id=run_id, status=RunStatus.RUNNING)
+        job = dominion.get_job_status(run_id)
+        if job:
+            return job
+        else:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+    if not brief_path:
+        raise HTTPException(status_code=400, detail="brief_path required")
     return await dominion.workflow_audit_brief(brief_path)
 
 @router.post("/retrieve/hybrid", response_model=EvidenceBundle)
