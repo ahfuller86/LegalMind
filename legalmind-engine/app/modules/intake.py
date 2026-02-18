@@ -32,6 +32,9 @@ class Intake:
 
     def vault_writer(self, file_path: str) -> str:
         # Returns file_id (hash)
+        if not self._validate_path(file_path):
+            raise ValueError(f"Access denied: Path {file_path} is outside allowed directories.")
+
         if not self.integrity_checker(file_path):
             raise ValueError(f"File integrity check failed: {file_path}")
 
@@ -46,6 +49,24 @@ class Intake:
         self.manifest_builder(file_hash, file_path)
 
         return file_hash
+
+    def _validate_path(self, file_path: str) -> bool:
+        # Prevent path traversal and restrict to /tmp or explicitly allowed directories
+        abs_path = os.path.abspath(file_path)
+
+        # In Docker/Prod, we might restrict to /app/inputs or /tmp
+        # For this implementation, we restrict to /tmp or the current working directory
+        allowed_prefixes = ["/tmp", os.getcwd()]
+
+        is_allowed = any(abs_path.startswith(prefix) for prefix in allowed_prefixes)
+
+        if not is_allowed:
+            return False
+
+        if ".." in file_path:
+            return False
+
+        return os.path.isfile(abs_path)
 
     def manifest_builder(self, file_id: str, original_path: str):
         manifest_path = os.path.join(self.case_context.base_path, "manifest.json")

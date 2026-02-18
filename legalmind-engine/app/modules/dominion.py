@@ -53,31 +53,31 @@ class Dominion:
         self.case_context.audit_log.log_event("Dominion", "ingest_job_start", {"run_id": run_id, "file": file_path})
 
         try:
-            # 1. Intake
-            file_hash = self.intake.vault_writer(file_path)
+            # 1. Intake (CPU/IO bound)
+            file_hash = await asyncio.to_thread(self.intake.vault_writer, file_path)
 
-            # 2. Conversion
+            # 2. Conversion (CPU bound)
             segments = []
             mime_type = self.intake.file_classifier(file_path)
             if "pdf" in mime_type:
-                segments = self.conversion.ingest_pdf_layout(file_path, file_hash)
+                segments = await asyncio.to_thread(self.conversion.ingest_pdf_layout, file_path, file_hash)
             elif "word" in mime_type or "docx" in mime_type or "officedocument" in mime_type:
-                segments = self.conversion.ingest_docx(file_path, file_hash)
+                segments = await asyncio.to_thread(self.conversion.ingest_docx, file_path, file_hash)
             elif "audio" in mime_type:
-                segments = self.conversion.ingest_audio(file_path, file_hash)
+                segments = await asyncio.to_thread(self.conversion.ingest_audio, file_path, file_hash)
             elif "video" in mime_type:
-                segments = self.conversion.ingest_video(file_path, file_hash)
+                segments = await asyncio.to_thread(self.conversion.ingest_video, file_path, file_hash)
             elif "image" in mime_type:
-                segments = self.conversion.ingest_image(file_path, file_hash)
+                segments = await asyncio.to_thread(self.conversion.ingest_image, file_path, file_hash)
             else:
                 self.case_context.audit_log.log_event("Dominion", "ingest_skip_unsupported", {"mime": mime_type})
 
-            # 3. Structuring
-            chunks = self.structuring.structural_chunker(segments)
+            # 3. Structuring (CPU bound)
+            chunks = await asyncio.to_thread(self.structuring.structural_chunker, segments)
 
-            # 4. Preservation
-            self.preservation.dense_indexer(chunks)
-            self.preservation.bm25_indexer(chunks)
+            # 4. Preservation (IO/CPU bound)
+            await asyncio.to_thread(self.preservation.dense_indexer, chunks)
+            await asyncio.to_thread(self.preservation.bm25_indexer, chunks)
 
             self.case_context.audit_log.log_event("Dominion", "ingest_job_complete", {"run_id": run_id})
 
@@ -119,37 +119,14 @@ class Dominion:
         self.case_context.audit_log.log_event("Dominion", "audit_job_start", {"run_id": run_id, "brief": brief_path})
 
         try:
-            # 1. Discernment
-            claims = self.discernment.extract_claims(brief_path)
+            # 1. Discernment (CPU bound)
+            claims = await asyncio.to_thread(self.discernment.extract_claims, brief_path)
 
-            # 2. Inquiry & Adjudication (with Retries)
-            findings = []
-            for claim in claims:
-                if claim.routing == "verify":
-                    # Retry logic loop
-                    max_retries = 2
-                    attempt = 0
-                    finding = None
-                    while attempt <= max_retries:
-                        try:
-                            bundle = self.inquiry.retrieve_evidence(claim)
-                            finding = self.adjudication.verify_claim_skeptical(claim, bundle)
-                            # If manual review needed or error, maybe retry?
-                            # For now, simple retry on exception or emptiness if desired.
-                            break
-                        except Exception as e:
-                            attempt += 1
-                            if attempt > max_retries:
-                                self.case_context.audit_log.log_event("Dominion", "claim_retry_exhausted", {"claim_id": claim.claim_id})
-                                # Create a failed finding
-                                break
-                            await asyncio.sleep(0.5 * attempt)
+            # 2. Inquiry & Adjudication (Parallel with Semaphore)
+            findings = await self._verify_claims_parallel(claims)
 
-                    if finding:
-                        findings.append(finding)
-
-            # 3. Chronicle
-            report_path = self.chronicle.render_report(findings)
+            # 3. Chronicle (IO/CPU bound)
+            report_path = await asyncio.to_thread(self.chronicle.render_report, findings)
 
             self.case_context.audit_log.log_event("Dominion", "audit_job_complete", {"run_id": run_id, "findings": len(findings)})
 
@@ -190,10 +167,10 @@ class Dominion:
     async def _run_cite_check_job(self, run_id: str, text: str):
         self.case_context.audit_log.log_event("Dominion", "cite_check_job_start", {"run_id": run_id})
         try:
-            citations = self.validation.verify_citations(text)
+            citations = await asyncio.to_thread(self.validation.verify_citations, text)
 
             # Use Chronicle to render report (even if just citations)
-            report_path = self.chronicle.render_report([], citation_findings=citations)
+            report_path = await asyncio.to_thread(self.chronicle.render_report, [], citation_findings=citations)
 
             complete_state = RunState(
                 run_id=run_id,
@@ -216,45 +193,29 @@ class Dominion:
     async def _run_prefile_gate_job(self, run_id: str, brief_path: str):
         self.case_context.audit_log.log_event("Dominion", "prefile_gate_start", {"run_id": run_id, "brief": brief_path})
         try:
-            # For simplicity in Phase 2, we read the brief content here or assume Discernment/Validation handles reading
-            # In a real app, reading text from docx/pdf should be centralized.
-            # Assuming brief_path is readable or we extract text from it.
-
-            # 1. Validation (Parallel)
-            # 2. Audit (Parallel)
-            # Using asyncio.gather
-
+            # 1. Read Text (IO bound)
             # Helper to get text for validation
-            # TODO: Add text extraction helper in Dominion or reuse Conversion
-            from app.modules.discernment import Discernment # Just to use logic if needed, but extraction is in Discernment
-            # We can use Discernment's extract_claims which reads the file, but we need raw text for citations.
-            # For now, let's just pass brief_path to validation and let it handle reading (implied) OR extract here.
-            # Let's read text simply here for Phase 2:
-            import docx
-            doc = docx.Document(brief_path)
-            full_text = "\n".join([p.text for p in doc.paragraphs])
+            def read_text():
+                import docx
+                doc = docx.Document(brief_path)
+                return "\n".join([p.text for p in doc.paragraphs])
 
+            full_text = await asyncio.to_thread(read_text)
+
+            # 2. Validation (Parallel) & Audit (Parallel)
             citation_task = asyncio.to_thread(self.validation.verify_citations, full_text)
 
-            # Audit task (Discernment -> Inquiry -> Adjudication)
-            # We can reuse _run_audit_job logic but we need the return values, not just side effect.
             async def run_audit_pipeline():
                 claims = await asyncio.to_thread(self.discernment.extract_claims, brief_path)
-                findings = []
-                for claim in claims:
-                    if claim.routing == "verify":
-                        bundle = await asyncio.to_thread(self.inquiry.retrieve_evidence, claim)
-                        finding = await asyncio.to_thread(self.adjudication.verify_claim_skeptical, claim, bundle)
-                        findings.append(finding)
-                return findings
+                return await self._verify_claims_parallel(claims)
 
             citation_findings, claim_findings = await asyncio.gather(citation_task, run_audit_pipeline())
 
-            # 3. Sentinel Gate
-            gate_result = self.sentinel.gate_evaluator(claim_findings, citation_findings)
+            # 3. Sentinel Gate (CPU bound, lightweight)
+            gate_result = await asyncio.to_thread(self.sentinel.gate_evaluator, claim_findings, citation_findings)
 
-            # 4. Chronicle Report
-            report_path = self.chronicle.render_report(claim_findings, citation_findings, gate_result)
+            # 4. Chronicle Report (IO bound)
+            report_path = await asyncio.to_thread(self.chronicle.render_report, claim_findings, citation_findings, gate_result)
 
             complete_state = RunState(
                 run_id=run_id,
@@ -267,6 +228,33 @@ class Dominion:
         except Exception as e:
             self.case_context.audit_log.log_event("Dominion", "prefile_gate_error", {"error": str(e)})
             self.case_context.jobs.save_job(RunState(run_id=run_id, status=RunStatus.FAILED, warnings=[str(e)]))
+
+    async def _verify_claims_parallel(self, claims):
+        findings = []
+        sem = asyncio.Semaphore(self.config.MAX_LLM_CONCURRENCY)
+
+        async def verify_single(claim):
+            if claim.routing != "verify":
+                return None
+            async with sem:
+                # Retry logic loop
+                max_retries = 2
+                attempt = 0
+                while attempt <= max_retries:
+                    try:
+                        bundle = await asyncio.to_thread(self.inquiry.retrieve_evidence, claim)
+                        finding = await asyncio.to_thread(self.adjudication.verify_claim_skeptical, claim, bundle)
+                        return finding
+                    except Exception as e:
+                        attempt += 1
+                        if attempt > max_retries:
+                            self.case_context.audit_log.log_event("Dominion", "claim_retry_exhausted", {"claim_id": claim.claim_id})
+                            return None
+                        await asyncio.sleep(0.5 * attempt)
+
+        tasks = [verify_single(c) for c in claims]
+        results = await asyncio.gather(*tasks)
+        return [r for r in results if r is not None]
 
     async def case_workspace_init(self, case_name: str) -> Dict[str, Any]:
         self.case_context.audit_log.log_event("Dominion", "case_workspace_init_start", {"case_name": case_name})

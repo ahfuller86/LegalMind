@@ -27,9 +27,15 @@ async def case_status(case_id: str):
     return {"status": "ok", "manifest": [], "index_health": {}}
 
 @router.post("/evidence/register")
-async def evidence_register(file_path: str = Body(..., embed=True), case_context: CaseContext = Depends(get_case_context)):
-    # Stub
-    return {"status": "registered", "file_id": "dummy_hash"}
+async def evidence_register(
+    file_path: str = Body(..., embed=True),
+    dominion: Dominion = Depends(get_dominion)
+):
+    try:
+        file_hash = dominion.intake.vault_writer(file_path)
+        return {"status": "registered", "file_id": file_hash}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/document/register")
 async def document_register(file_path: str = Body(..., embed=True), case_context: CaseContext = Depends(get_case_context)):
@@ -85,7 +91,7 @@ async def brief_extract_claims(
     file_path: str = Body(..., embed=True),
     dominion: Dominion = Depends(get_dominion)
 ):
-    return []
+    return dominion.discernment.extract_claims(file_path)
 
 @router.post("/audit/run", response_model=RunState)
 async def audit_run(
@@ -107,23 +113,53 @@ async def audit_run(
 @router.post("/retrieve/hybrid", response_model=EvidenceBundle)
 async def retrieve_hybrid(
     claim_id: str = Body(..., embed=True),
+    text: str = Body(..., embed=True),
     dominion: Dominion = Depends(get_dominion)
 ):
-    # Return dummy bundle
-    return EvidenceBundle(
-        bundle_id="b1", claim_id=claim_id, chunks=[], retrieval_scores=[],
-        retrieval_mode=RetrievalMode.SEMANTIC, modality_filter_applied=False
+    # Construct a temporary claim object
+    from app.models import Claim, ClaimType, RoutingDecision
+    claim = Claim(
+        claim_id=claim_id,
+        text=text,
+        type=ClaimType.FACTUAL,
+        source_location="",
+        priority=1,
+        routing=RoutingDecision.VERIFY
     )
+    return dominion.inquiry.retrieve_evidence(claim)
 
 @router.post("/verify/claim", response_model=RunState)
 async def verify_claim(
     claim_id: Optional[str] = Body(None, embed=True),
+    text: Optional[str] = Body(None, embed=True),
     run_id: Optional[str] = Body(None, embed=True),
     dominion: Dominion = Depends(get_dominion)
 ):
+    # Single claim verification usually is fast enough for sync, but adhering to pattern
+    # For now, we'll just run it sync and return COMPLETE
     if run_id:
         return RunState(run_id=run_id, status=RunStatus.COMPLETE)
-    return RunState(run_id="verify_job_1", status=RunStatus.RUNNING)
+
+    # Run sync verification
+    # Need to retrieve first
+    from app.models import Claim, ClaimType, RoutingDecision
+    claim = Claim(
+        claim_id=claim_id or "temp",
+        text=text or "",
+        type=ClaimType.FACTUAL,
+        source_location="",
+        priority=1,
+        routing=RoutingDecision.VERIFY
+    )
+    bundle = dominion.inquiry.retrieve_evidence(claim)
+    finding = dominion.adjudication.verify_claim_skeptical(claim, bundle)
+
+    return RunState(
+        run_id="sync_complete",
+        status=RunStatus.COMPLETE,
+        progress=1.0,
+        result_payload=finding.model_dump()
+    )
 
 @router.post("/citations/verify-batch", response_model=RunState)
 async def citations_verify_batch(

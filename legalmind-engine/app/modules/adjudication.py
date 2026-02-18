@@ -33,21 +33,49 @@ class Adjudication:
 
         try:
             # Call LLM via litellm
-            # Note: In a real environment, we'd handle async better here or use synchronous call in a thread
-            # For Phase 4, we assume we can call this if configured.
+            # Check if API keys are present or we are in a test env where we should skip
+            if not os.getenv("OPENAI_API_KEY") and self.config.LLM_PROVIDER == "openai":
+                 return self._heuristic_verify(claim, bundle)
 
-            # Since we don't have a real model key in this environment, we will mock the response
-            # if we are testing, or wrap in try/except to fallback.
+            response = litellm.completion(
+                model=self.config.LLM_MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                api_base="http://localhost:1234/v1" if self.config.LLM_PROVIDER == "lmstudio" else None,
+                max_tokens=500
+            )
+            content = response.choices[0].message.content
 
-            # Stub for LLM call:
-            # response = litellm.completion(
-            #     model=self.config.LLM_MODEL_NAME,
-            #     messages=[{"role": "user", "content": prompt}],
-            #     api_base="http://localhost:1234/v1" if self.config.LLM_PROVIDER == "lmstudio" else None
-            # )
-            # content = response.choices[0].message.content
+            # Simple parsing of the JSON or text response
+            # In a robust implementation, use strict JSON mode or parser
+            import json
+            import re
 
-            # For this exercise, we fallback to heuristic but keep the structure ready
+            # Try to find JSON blob
+            match = re.search(r'\{.*\}', content, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+                status_str = data.get("status", "Needs Manual Review")
+                # Map string to Enum
+                try:
+                    status = VerificationStatus(status_str)
+                except:
+                    status = VerificationStatus.NEEDS_MANUAL_REVIEW
+
+                return VerificationFinding(
+                    claim_id=claim.claim_id,
+                    status=status,
+                    justification=Justification(
+                        elements_supported=[data.get("reasoning", "")],
+                        elements_missing=[],
+                        contradictions=[]
+                    ),
+                    quotes_with_provenance=[data.get("quote", "")] if data.get("quote") else [],
+                    evidence_refs=[c.chunk_id for c in bundle.chunks],
+                    confidence=ConfidenceLevel.HIGH,
+                    warnings=[]
+                )
+
+            # Fallback if no JSON found
             return self._heuristic_verify(claim, bundle)
 
         except Exception as e:

@@ -14,15 +14,50 @@ class Validation:
         return citations
 
     def courtlistener_client(self, citation_str: str) -> Dict[str, Any]:
-        # Stub implementation to avoid external network dependency in tests
-        # This will be replaced by actual API call in Phase 2+
-        if "347 U.S. 483" in citation_str: # Brown v. Board
+        import os
+        # Check for mock trigger first (for tests)
+        if os.getenv("LEGALMIND_ENV") == "TEST" and "347 U.S. 483" in citation_str:
              return {
                  "status": "found",
                  "title": "Brown v. Board of Education",
                  "date_filed": "1954-05-17",
                  "court": "scotus"
              }
+
+        # Real API Implementation
+        import requests
+        import os
+
+        # Free API, but polite to identify
+        headers = {"User-Agent": "LegalMind-Engine/3.0"}
+
+        # Use Search API as simple lookup if citation endpoint is complex/restricted
+        # Or better: Document lookup by citation logic.
+        # CourtListener has strict rate limits and complex citation endpoints.
+        # For this implementation, we use a search fallback which is robust.
+
+        try:
+            response = requests.get(
+                "https://www.courtlistener.com/api/rest/v3/search/",
+                params={"q": f'"{citation_str}"'},
+                headers=headers,
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("count", 0) > 0:
+                    result = data["results"][0]
+                    return {
+                        "status": "found",
+                        "title": result.get("caseName", "Unknown"),
+                        "date_filed": result.get("dateFiled", ""),
+                        "court": result.get("court", ""),
+                        "url": f"https://www.courtlistener.com{result.get('absolute_url', '')}"
+                    }
+        except Exception as e:
+            print(f"CourtListener API error: {e}")
+
         return {"status": "not_found"}
 
     def reconciler(self, api_data: Dict[str, Any]) -> CitationStatus:

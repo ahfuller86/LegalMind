@@ -117,9 +117,22 @@ class AuditLog:
         self.base_path = base_path
         self.log_path = os.path.join(base_path, "audit_log")
         os.makedirs(self.log_path, exist_ok=True)
+        self.log_file = os.path.join(self.log_path, "audit.jsonl")
 
     def log_event(self, module: str, action: str, details: Dict[str, Any]):
-        print(f"AUDIT: [{self.case_id}] {module} - {action}: {details}")
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "case_id": self.case_id,
+            "module": module,
+            "action": action,
+            "details": details
+        }
+        # Print for debug
+        print(f"AUDIT: {json.dumps(entry)}")
+
+        # Persist
+        with open(self.log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
 class CaseContext:
     def __init__(self, case_id: str, base_storage_path: str = "./storage"):
