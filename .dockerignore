@@ -1,0 +1,9 @@
+__pycache__
+*.pyc
+.git
+.env
+storage
+node_modules
+dist
+openclaw-agent
+legalmind-tools
