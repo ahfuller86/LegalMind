@@ -1,5 +1,9 @@
-from fastapi import APIRouter, Depends, Query, HTTPException, Body
+from fastapi import APIRouter, Depends, Query, HTTPException, Body, File, UploadFile
 from typing import Optional, Dict, Any, List
+import shutil
+import os
+import asyncio
+import uuid
 from app.core.stores import CaseContext
 from app.modules.dominion import Dominion
 from app.models import RunState, RunStatus, EvidenceSegment, Chunk, Claim, EvidenceBundle, VerificationFinding, CitationFinding, GateResult, RetrievalMode
@@ -30,13 +34,34 @@ async def case_status(case_id: str):
     # Stub
     return {"status": "ok", "manifest": [], "index_health": {}}
 
+@router.post("/evidence/upload")
+async def evidence_upload(
+    file: UploadFile = File(...)
+):
+    try:
+        # Secure upload directory
+        upload_dir = "/tmp/legalmind_uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+
+        # Generate safe filename
+        safe_filename = f"{uuid.uuid4()}_{file.filename}"
+        file_path = os.path.join(upload_dir, safe_filename)
+
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        return {"status": "uploaded", "file_path": file_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
 @router.post("/evidence/register")
 async def evidence_register(
     file_path: str = Body(..., embed=True),
     dominion: Dominion = Depends(get_dominion)
 ):
     try:
-        file_hash = dominion.intake.vault_writer(file_path)
+        # Offload file I/O and hashing to thread
+        file_hash = await asyncio.to_thread(dominion.intake.vault_writer, file_path)
         return {"status": "registered", "file_id": file_hash}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

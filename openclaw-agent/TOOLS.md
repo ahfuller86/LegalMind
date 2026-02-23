@@ -1,6 +1,7 @@
 # LegalMind Tool Usage
 
 ## Pipeline Operations
+*   Use `legalmind.evidence.upload` to upload files or directories.
 *   Use `legalmind.evidence.ingest` for converting files.
 *   Use `legalmind.prefile.run` for final document checks (includes citation & claim audit).
 *   Use `legalmind.verify.claim` for specific claim verification.
