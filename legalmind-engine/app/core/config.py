@@ -24,6 +24,7 @@ class Config(BaseModel):
 
     # System
     STORAGE_PATH: str = "./storage"
+    UPLOAD_DIR: str = Field(default="/tmp/legalmind_uploads", description="Directory for file uploads")
     ALLOWED_INPUT_PATHS: List[str] = Field(default=["/tmp", "."], description="Allowed paths for file ingestion")
     BACKGROUND_TASK_ENABLED: bool = Field(default=True, description="Enable background maintenance tasks")
 
@@ -41,6 +42,7 @@ def load_config() -> Config:
         EMBEDDING_PROVIDER=os.getenv("LEGALMIND_EMBEDDING_PROVIDER", "sentence-transformers"),
         WHISPER_MODEL_FAST=os.getenv("LEGALMIND_WHISPER_MODEL_FAST", "tiny"),
         WHISPER_MODEL_ACCURATE=os.getenv("LEGALMIND_WHISPER_MODEL_ACCURATE", "large"),
+        UPLOAD_DIR=os.getenv("LEGALMIND_UPLOAD_DIR", "/tmp/legalmind_uploads"),
         ALLOWED_INPUT_PATHS=os.getenv("LEGALMIND_ALLOWED_INPUT_PATHS", "/tmp,.").split(","),
         BACKGROUND_TASK_ENABLED=os.getenv("LEGALMIND_BACKGROUND_TASK_ENABLED", "true").lower() == "true",
     )

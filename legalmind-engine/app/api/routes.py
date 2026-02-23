@@ -38,13 +38,15 @@ async def case_status(case_id: str):
 async def evidence_upload(
     file: UploadFile = File(...)
 ):
+    from app.core.config import load_config
+    config = load_config()
     try:
         # Secure upload directory
-        upload_dir = "/tmp/legalmind_uploads"
+        upload_dir = config.UPLOAD_DIR
         os.makedirs(upload_dir, exist_ok=True)
 
         # Generate safe filename
-        safe_filename = f"{uuid.uuid4()}_{file.filename}"
+        safe_filename = f"{uuid.uuid4()}_{os.path.basename(file.filename)}"
         file_path = os.path.join(upload_dir, safe_filename)
 
         with open(file_path, "wb") as buffer:

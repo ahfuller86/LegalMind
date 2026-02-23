@@ -65,6 +65,9 @@ class Intake:
 
         # Resolve allowed paths
         allowed_prefixes = []
+        # Explicitly allow upload directory
+        allowed_prefixes.append(os.path.abspath(config.UPLOAD_DIR))
+
         for p in config.ALLOWED_INPUT_PATHS:
             if p == ".":
                 allowed_prefixes.append(os.getcwd())

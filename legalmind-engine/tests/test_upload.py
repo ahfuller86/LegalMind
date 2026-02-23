@@ -1,70 +1,83 @@
+
+import unittest
+from unittest.mock import MagicMock, patch
 import sys
-from unittest.mock import MagicMock
-
-# Mock dependencies BEFORE importing app.api.routes
-sys.modules["app.modules.dominion"] = MagicMock()
-sys.modules["app.core.stores"] = MagicMock()
-
-# Now import router
-from app.api.routes import router
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from app.api.routes import get_dominion
-import pytest
 import os
 import shutil
-import asyncio
+from fastapi.testclient import TestClient
+from fastapi import FastAPI
 
-# Mock app setup
-app = FastAPI()
-app.include_router(router)
-client = TestClient(app)
+class TestUpload(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = "/tmp/legalmind_test_upload"
+        os.makedirs(self.test_dir, exist_ok=True)
+        self.env_patcher = patch.dict(os.environ, {"LEGALMIND_UPLOAD_DIR": self.test_dir})
+        self.env_patcher.start()
 
-def test_evidence_upload():
-    # Create a dummy file
-    file_content = b"test file content"
-    files = {"file": ("test.txt", file_content, "text/plain")}
+    def tearDown(self):
+        self.env_patcher.stop()
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
 
-    response = client.post("/evidence/upload", files=files)
+    def test_evidence_upload(self):
+        mock_dominion = MagicMock()
+        mock_stores = MagicMock()
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "uploaded"
-    assert "file_path" in data
-    assert os.path.exists(data["file_path"])
+        # We do NOT mock app.models because FastAPI needs real Pydantic models for validation
 
-    # Clean up
-    if os.path.exists(data["file_path"]):
-        os.remove(data["file_path"])
+        with patch.dict(sys.modules, {
+            "app.modules.dominion": mock_dominion,
+            "app.core.stores": mock_stores,
+        }):
+            if 'app.api.routes' in sys.modules:
+                del sys.modules['app.api.routes']
 
-@pytest.mark.asyncio
-async def test_evidence_register_async():
-    # Setup - simulate a file being uploaded
-    upload_dir = "/tmp/legalmind_uploads"
-    os.makedirs(upload_dir, exist_ok=True)
-    file_path = os.path.join(upload_dir, "test_async_register.txt")
-    with open(file_path, "w") as f:
-        f.write("async register test")
+            from app.api.routes import router
 
-    # Mocking
-    mock_dominion = MagicMock()
-    # vault_writer must be a function/callable for asyncio.to_thread
-    mock_dominion.intake.vault_writer = MagicMock(return_value="dummy_hash")
+            app = FastAPI()
+            app.include_router(router)
+            client = TestClient(app)
 
-    app.dependency_overrides[get_dominion] = lambda: mock_dominion
+            file_content = b"test file content"
+            files = {"file": ("test.txt", file_content, "text/plain")}
 
-    response = client.post("/evidence/register", json={"file_path": file_path})
+            response = client.post("/evidence/upload", files=files)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "registered"
-    assert data["file_id"] == "dummy_hash"
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["status"], "uploaded")
+            self.assertTrue(data["file_path"].startswith(self.test_dir))
+            self.assertTrue(os.path.exists(data["file_path"]))
 
-    # Verify vault_writer was called
-    # Note: asyncio.to_thread runs in a separate thread.
-    # client.post waits for the response. By the time it returns, the thread is done.
-    mock_dominion.intake.vault_writer.assert_called_with(file_path)
+    def test_evidence_register_async(self):
+        mock_dominion = MagicMock()
+        mock_stores = MagicMock()
 
-    # Clean up
-    if os.path.exists(file_path):
-        os.remove(file_path)
+        with patch.dict(sys.modules, {
+            "app.modules.dominion": mock_dominion,
+            "app.core.stores": mock_stores,
+        }):
+            if 'app.api.routes' in sys.modules:
+                del sys.modules['app.api.routes']
+
+            from app.api.routes import router, get_dominion
+
+            app = FastAPI()
+            app.include_router(router)
+            client = TestClient(app)
+
+            mock_dom_instance = MagicMock()
+            mock_dom_instance.intake.vault_writer.return_value = "hash123"
+            app.dependency_overrides[get_dominion] = lambda: mock_dom_instance
+
+            response = client.post("/evidence/register", json={"file_path": "/tmp/anyfile"})
+
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["status"], "registered")
+            self.assertEqual(data["file_id"], "hash123")
+
+            mock_dom_instance.intake.vault_writer.assert_called_with("/tmp/anyfile")
+
+if __name__ == '__main__':
+    unittest.main()
