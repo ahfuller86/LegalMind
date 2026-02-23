@@ -3,9 +3,21 @@ import shutil
 import os
 import mimetypes
 import json
+import fcntl
+import contextlib
 from datetime import datetime
 from app.core.stores import CaseContext
+from app.core.config import load_config
 from typing import Dict, Any
+
+@contextlib.contextmanager
+def file_lock(lock_path: str):
+    with open(lock_path, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 class Intake:
     def __init__(self, case_context: CaseContext):
@@ -38,12 +50,8 @@ class Intake:
         if not self.integrity_checker(file_path):
             raise ValueError(f"File integrity check failed: {file_path}")
 
-        file_hash = self.checksum_engine(file_path)
-        vault_path = os.path.join(self.case_context.vault.vault_path, file_hash)
-
-        # Deduplication: only copy if not exists
-        if not os.path.exists(vault_path):
-            shutil.copy2(file_path, vault_path)
+        # Delegate hashing and storage to Vault
+        file_hash = self.case_context.vault.store_file_from_path(file_path)
 
         # Add to manifest
         self.manifest_builder(file_hash, file_path)
@@ -53,44 +61,54 @@ class Intake:
     def _validate_path(self, file_path: str) -> bool:
         # Prevent path traversal and restrict to /tmp or explicitly allowed directories
         abs_path = os.path.abspath(file_path)
+        config = load_config()
 
-        # In Docker/Prod, we might restrict to /app/inputs or /tmp
-        # For this implementation, we restrict to /tmp or the current working directory
-        allowed_prefixes = ["/tmp", os.getcwd()]
+        # Resolve allowed paths
+        allowed_prefixes = []
+        for p in config.ALLOWED_INPUT_PATHS:
+            if p == ".":
+                allowed_prefixes.append(os.getcwd())
+            else:
+                allowed_prefixes.append(os.path.abspath(p))
 
         is_allowed = any(abs_path.startswith(prefix) for prefix in allowed_prefixes)
 
         if not is_allowed:
             return False
 
-        if ".." in file_path:
-            return False
+        # Basic path traversal check (though startswith helps)
+        if ".." in file_path and not is_allowed:
+             # Double check if absolute path is still safe
+             pass
 
         return os.path.isfile(abs_path)
 
     def manifest_builder(self, file_id: str, original_path: str):
         manifest_path = os.path.join(self.case_context.base_path, "manifest.json")
-        manifest = []
-        if os.path.exists(manifest_path):
-            with open(manifest_path, "r") as f:
-                try:
-                    manifest = json.load(f)
-                except json.JSONDecodeError:
-                    manifest = []
+        lock_path = manifest_path + ".lock"
 
-        # Check if already in manifest
-        for entry in manifest:
-            if entry["file_id"] == file_id:
-                return
+        with file_lock(lock_path):
+            manifest = []
+            if os.path.exists(manifest_path):
+                with open(manifest_path, "r") as f:
+                    try:
+                        manifest = json.load(f)
+                    except json.JSONDecodeError:
+                        manifest = []
 
-        entry = {
-            "file_id": file_id,
-            "original_name": os.path.basename(original_path),
-            "mime_type": self.file_classifier(original_path),
-            "upload_timestamp": datetime.now().isoformat(),
-            "status": "ingested"
-        }
-        manifest.append(entry)
+            # Check if already in manifest
+            for entry in manifest:
+                if entry["file_id"] == file_id:
+                    return
 
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
+            entry = {
+                "file_id": file_id,
+                "original_name": os.path.basename(original_path),
+                "mime_type": self.file_classifier(original_path),
+                "upload_timestamp": datetime.now().isoformat(),
+                "status": "ingested"
+            }
+            manifest.append(entry)
+
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)

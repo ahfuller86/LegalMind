@@ -1,5 +1,6 @@
 import os
 import shutil
+import docx
 from typing import Dict, Any, List, Optional
 from jinja2 import Template
 from app.core.stores import CaseContext
@@ -105,7 +106,6 @@ class Chronicle:
         return report_path
 
     def docx_renderer(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]], gate_result: Optional[GateResult]):
-        import docx
         doc = docx.Document()
         doc.add_heading("LegalMind Audit Report", 0)
 

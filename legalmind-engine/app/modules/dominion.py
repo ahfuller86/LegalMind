@@ -1,5 +1,7 @@
 import uuid
 import asyncio
+import os
+import tempfile
 from app.core.stores import CaseContext
 from app.models import RunState, RunStatus
 from typing import Dict, Any, Optional
@@ -183,6 +185,39 @@ class Dominion:
             self.case_context.audit_log.log_event("Dominion", "cite_check_error", {"error": str(e)})
             self.case_context.jobs.save_job(RunState(run_id=run_id, status=RunStatus.FAILED, warnings=[str(e)]))
 
+    def _validate_brief_path(self, brief_path: str) -> None:
+        """
+        Validates that the brief path is within allowed directories to prevent arbitrary file read.
+        Allowed directories: case storage path and system temp directory.
+        """
+        abs_path = os.path.abspath(brief_path)
+
+        # Allowed prefixes
+        allowed_prefixes = [
+            os.path.abspath(self.case_context.base_path),
+            os.path.abspath(tempfile.gettempdir())
+        ]
+
+        is_allowed = False
+        for prefix in allowed_prefixes:
+            # commonpath ensures that abs_path is under prefix
+            try:
+                if os.path.commonpath([abs_path, prefix]) == prefix:
+                    is_allowed = True
+                    break
+            except ValueError:
+                # paths on different drives
+                continue
+
+        if not is_allowed:
+            raise ValueError(f"Access denied: Path '{brief_path}' is outside allowed directories.")
+
+        if not os.path.exists(abs_path):
+            raise ValueError(f"File not found: {brief_path}")
+
+        if not os.path.isfile(abs_path):
+            raise ValueError(f"Path is not a file: {brief_path}")
+
     async def workflow_prefile_gate(self, brief_path: str) -> RunState:
         run_id = str(uuid.uuid4())
         run_state = RunState(run_id=run_id, status=RunStatus.RUNNING, progress=0.0)
@@ -193,6 +228,9 @@ class Dominion:
     async def _run_prefile_gate_job(self, run_id: str, brief_path: str):
         self.case_context.audit_log.log_event("Dominion", "prefile_gate_start", {"run_id": run_id, "brief": brief_path})
         try:
+            # Validate path first
+            self._validate_brief_path(brief_path)
+
             # 1. Read Text (IO bound)
             # Helper to get text for validation
             def read_text():
@@ -260,7 +298,6 @@ class Dominion:
         self.case_context.audit_log.log_event("Dominion", "case_workspace_init_start", {"case_name": case_name})
 
         # Determine base path for cases
-        import os
         base_storage = os.path.dirname(self.case_context.base_path)
         if not base_storage or base_storage == ".":
             # Fallback if running from root or unexpected path
@@ -271,3 +308,49 @@ class Dominion:
 
         self.case_context.audit_log.log_event("Dominion", "case_workspace_init_complete", {"path": new_context.base_path})
         return {"status": "initialized", "path": new_context.base_path}
+
+    async def workflow_background_maintenance(self) -> RunState:
+        run_id = str(uuid.uuid4())
+        run_state = RunState(run_id=run_id, status=RunStatus.RUNNING, progress=0.0)
+        self.case_context.jobs.save_job(run_state)
+        asyncio.create_task(self._run_maintenance_job(run_id))
+        return run_state
+
+    async def _run_maintenance_job(self, run_id: str):
+        self.case_context.audit_log.log_event("Dominion", "maintenance_job_start", {"run_id": run_id})
+        try:
+            # 1. Fetch all segments (IO bound)
+            segments = await asyncio.to_thread(self.case_context.ledger.get_all_segments)
+
+            # 2. Filter for draft quality
+            draft_segments = [s for s in segments if s.metadata.get("transcription_quality") == "draft"]
+
+            total_drafts = len(draft_segments)
+            processed_count = 0
+
+            self.case_context.audit_log.log_event("Dominion", "maintenance_scan", {"found_drafts": total_drafts})
+
+            # 3. Refine sequentially
+            # Since this is "maintenance", we do it sequentially to save resources.
+            for seg in draft_segments:
+                await asyncio.to_thread(self.conversion.refine_transcription, seg)
+
+                # Check if upgraded
+                if seg.metadata.get("transcription_quality") == "final":
+                    # Save update
+                    await asyncio.to_thread(self.case_context.ledger.update_segment, seg)
+                    processed_count += 1
+
+            self.case_context.audit_log.log_event("Dominion", "maintenance_job_complete", {"processed": processed_count})
+
+            complete_state = RunState(
+                run_id=run_id,
+                status=RunStatus.COMPLETE,
+                progress=1.0,
+                result_payload={"upgraded_segments": processed_count}
+            )
+            self.case_context.jobs.save_job(complete_state)
+
+        except Exception as e:
+            self.case_context.audit_log.log_event("Dominion", "maintenance_error", {"error": str(e)})
+            self.case_context.jobs.save_job(RunState(run_id=run_id, status=RunStatus.FAILED, warnings=[str(e)]))

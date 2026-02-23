@@ -65,12 +65,55 @@ class Preservation:
 
     def bm25_indexer(self, chunks: List[Chunk]):
         # Rebuild BM25 for simplicity in Phase 1 (append logic is harder for BM25)
-        # Load all chunks to rebuild
-        all_chunks = self.case_context.index.get_all_chunks()
-        if not all_chunks:
+        # Optimization: Use cached tokenized corpus to avoid reading full JSONL
+        corpus_path = os.path.join(self.case_context.index.index_path, "corpus.pkl")
+        tokenized_corpus = []
+        loaded_from_cache = False
+
+        if os.path.exists(corpus_path):
+            try:
+                with open(corpus_path, "rb") as f:
+                    tokenized_corpus = pickle.load(f)
+                loaded_from_cache = True
+            except Exception:
+                # Corrupted cache, ignore
+                tokenized_corpus = []
+
+        # Check for continuity if we loaded from cache and have new chunks
+        # chunks are sorted by chunk_index, so check first chunk
+        can_append = False
+        if loaded_from_cache and chunks:
+            # Ensure chunks are sorted (they should be coming from structural_chunker)
+            first_chunk_idx = chunks[0].chunk_index
+            if len(tokenized_corpus) == first_chunk_idx:
+                can_append = True
+            else:
+                # Discontinuity detected or overlapping, fallback to full rebuild
+                pass
+        elif loaded_from_cache and not chunks:
+            # Just rebuilding index from cache (maybe forced refresh)
+            can_append = True
+
+        if can_append and chunks:
+            new_tokens = [c.text.split(" ") for c in chunks]
+            tokenized_corpus.extend(new_tokens)
+            # Update cache
+            with open(corpus_path, "wb") as f:
+                pickle.dump(tokenized_corpus, f)
+
+        # If we couldn't append or cache was missing/invalid/empty, full rebuild from source
+        if not loaded_from_cache or (chunks and not can_append):
+            all_chunks = self.case_context.index.get_all_chunks()
+            if not all_chunks:
+                return
+            tokenized_corpus = [c.text.split(" ") for c in all_chunks]
+            with open(corpus_path, "wb") as f:
+                pickle.dump(tokenized_corpus, f)
+
+        # If corpus is still empty, nothing to index
+        if not tokenized_corpus:
             return
 
-        tokenized_corpus = [c.text.split(" ") for c in all_chunks]
         self.bm25_index = BM25Okapi(tokenized_corpus)
 
         with open(self.bm25_path, "wb") as f:

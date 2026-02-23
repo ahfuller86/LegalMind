@@ -29,25 +29,26 @@ def test_prefile_run():
     response = client.post("/api/prefile/run", json={"brief_path": "/tmp/brief.docx"})
     assert response.status_code == 200
     data = response.json()
-    assert data["run_id"] == "dummy_gate_run_id"
+    assert "run_id" in data
     assert data["status"] == "running"
 
 def test_audit_run():
     response = client.post("/api/audit/run", json={"brief_path": "/tmp/brief.docx"})
     assert response.status_code == 200
     data = response.json()
-    assert data["run_id"] == "dummy_audit_run_id"
+    assert "run_id" in data
     assert data["status"] == "running"
 
 def test_verify_claim():
     response = client.post("/api/verify/claim", json={"claim_id": "claim_123"})
     assert response.status_code == 200
     data = response.json()
-    assert data["run_id"] == "verify_job_1"
+    assert data["run_id"] == "sync_complete"
 
 def test_retrieve_hybrid():
-    response = client.post("/api/retrieve/hybrid", json={"claim_id": "claim_123"})
+    # Requires text now
+    response = client.post("/api/retrieve/hybrid", json={"claim_id": "claim_123", "text": "test claim"})
     assert response.status_code == 200
     data = response.json()
-    assert data["bundle_id"] == "b1"
+    assert "bundle_id" in data
     assert data["retrieval_mode"] == "semantic"

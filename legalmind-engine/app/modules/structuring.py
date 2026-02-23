@@ -11,8 +11,7 @@ class Structuring:
     def structural_chunker(self, segments: List[EvidenceSegment]) -> List[Chunk]:
         chunks = []
         # Get existing chunk count to maintain global index
-        existing_chunks = self.case_context.index.get_all_chunks()
-        chunk_index = len(existing_chunks)
+        chunk_index = self.case_context.index.get_chunk_count()
 
         for segment in segments:
             # Paragraph splitting

@@ -7,6 +7,7 @@ import mimetypes
 from typing import List, Optional
 from PIL import Image
 from app.core.stores import CaseContext
+from app.core.config import load_config
 from app.models import EvidenceSegment, Modality
 
 # Optional imports for multi-modal support
@@ -30,20 +31,45 @@ try:
 except ImportError:
     convert_from_path = None
 
+class WhisperModelManager:
+    _instance = None
+    _model = None
+    _model_name = None
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = WhisperModelManager()
+        return cls._instance
+
+    def get_model(self, model_name: str = None):
+        if not whisper:
+            return None
+
+        config = load_config()
+        target_model = model_name or config.WHISPER_MODEL_FAST
+
+        # Load if not loaded or if requested model differs from loaded one
+        if self._model is None or self._model_name != target_model:
+            print(f"Loading Whisper model: {target_model}...")
+            # Unload previous model if needed
+            if self._model:
+                del self._model
+                import gc
+                gc.collect()
+
+            try:
+                self._model = whisper.load_model(target_model)
+                self._model_name = target_model
+            except Exception as e:
+                print(f"Failed to load Whisper model {target_model}: {e}")
+                return None
+
+        return self._model
+
 class Conversion:
     def __init__(self, case_context: CaseContext):
         self.case_context = case_context
-        self._whisper_model = None
-
-    def _get_whisper_model(self):
-        if not self._whisper_model and whisper:
-            # Using 'tiny' for this environment/stub purposes.
-            # In prod, config should dictate model size.
-            try:
-                self._whisper_model = whisper.load_model("tiny")
-            except Exception as e:
-                print(f"Failed to load Whisper model: {e}")
-        return self._whisper_model
 
     def ingest_pdf_layout(self, file_path: str, source_asset_id: str) -> List[EvidenceSegment]:
         segments = []
@@ -125,7 +151,9 @@ class Conversion:
 
     def ingest_audio(self, file_path: str, source_asset_id: str, modality: Modality = Modality.AUDIO_TRANSCRIPT) -> List[EvidenceSegment]:
         segments = []
-        model = self._get_whisper_model()
+        config = load_config()
+        manager = WhisperModelManager.get_instance()
+        model = manager.get_model(config.WHISPER_MODEL_FAST)
 
         # Check if we can run whisper (model loaded + ffmpeg present)
         has_ffmpeg = shutil.which('ffmpeg') is not None
@@ -133,9 +161,7 @@ class Conversion:
         if model and has_ffmpeg:
             try:
                 result = model.transcribe(file_path)
-                text = result["text"]
 
-                # We could split by segments, but for simplicity here we take the whole text
                 # Ideally map result['segments'] to EvidenceSegments
                 for s in result.get('segments', []):
                     segment = EvidenceSegment(
@@ -145,9 +171,15 @@ class Conversion:
                         location=f"{s['start']}-{s['end']}",
                         text=s['text'].strip(),
                         confidence=1.0, # Whisper doesn't give segment-level confidence easily in this API
-                        extraction_method="openai-whisper-tiny",
+                        extraction_method=f"openai-whisper-{config.WHISPER_MODEL_FAST}",
                         derived=False,
-                        warnings=[]
+                        warnings=[],
+                        metadata={
+                            "transcription_quality": "draft",
+                            "model": config.WHISPER_MODEL_FAST,
+                            "timestamp_start": s['start'],
+                            "timestamp_end": s['end']
+                        }
                     )
                     segments.append(segment)
                     self.case_context.ledger.append_segment(segment)
@@ -160,6 +192,86 @@ class Conversion:
             pass
 
         return segments
+
+    def refine_transcription(self, segment: EvidenceSegment) -> EvidenceSegment:
+        """
+        Refines the transcription of a segment using the accurate model.
+        """
+        config = load_config()
+
+        # Identify source file from vault
+        file_path = os.path.join(self.case_context.vault.vault_path, segment.source_asset_id)
+        if not os.path.exists(file_path):
+            segment.warnings.append("Refinement failed: Source file not found")
+            return segment
+
+        manager = WhisperModelManager.get_instance()
+        model = manager.get_model(config.WHISPER_MODEL_ACCURATE)
+
+        if not model:
+            segment.warnings.append("Refinement failed: Model not loaded")
+            return segment
+
+        try:
+            # We need to transcribe only the segment or the whole file and find the segment?
+            # Whisper transcribes the whole file.
+            # Ideally we extract the clip using ffmpeg-python.
+            # For simplicity in this engine, we re-transcribe the whole file and find the matching segment based on timestamps?
+            # That is inefficient for a single segment, but acceptable if we batch or if file is small.
+            # OPTIMIZATION: Extract audio clip for the specific duration.
+
+            # Since segment has start/end in metadata (if ingested by new logic) or location
+            start = segment.metadata.get("timestamp_start")
+            duration = None
+            if start is not None:
+                end = segment.metadata.get("timestamp_end")
+                if end:
+                    duration = end - start
+
+            # If we don't have timestamps (legacy), fallback to full re-transcription logic or skip
+            # Assuming we only refine "draft" segments which have this metadata.
+
+            # However, Whisper takes file path. We can't easily tell it to start at X.
+            # We must use ffmpeg to trim.
+            if not ffmpeg:
+                segment.warnings.append("Refinement failed: ffmpeg-python not installed")
+                return segment
+
+            temp_clip = f"/tmp/{segment.segment_id}.wav"
+
+            if start is not None and duration:
+                try:
+                    (
+                        ffmpeg
+                        .input(file_path, ss=start, t=duration)
+                        .output(temp_clip)
+                        .run(quiet=True, overwrite_output=True)
+                    )
+                    transcribe_path = temp_clip
+                except ffmpeg.Error as e:
+                    print(f"ffmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
+                    # Fallback to full file? No, that's too heavy for one segment.
+                    segment.warnings.append("Refinement failed: ffmpeg processing error")
+                    return segment
+            else:
+                transcribe_path = file_path
+
+            result = model.transcribe(transcribe_path)
+            new_text = result["text"].strip()
+
+            segment.text = new_text
+            segment.metadata["transcription_quality"] = "final"
+            segment.metadata["model"] = config.WHISPER_MODEL_ACCURATE
+            segment.extraction_method = f"openai-whisper-{config.WHISPER_MODEL_ACCURATE}"
+
+            if os.path.exists(temp_clip):
+                os.remove(temp_clip)
+
+        except Exception as e:
+            print(f"Refinement failed: {e}")
+            segment.warnings.append(f"Refinement error: {str(e)}")
+
+        return segment
 
     def ingest_video(self, file_path: str, source_asset_id: str) -> List[EvidenceSegment]:
         # Reuse audio ingestion for the audio track, but override modality
