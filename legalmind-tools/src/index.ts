@@ -1,5 +1,10 @@
 // legalmind-tools/src/index.ts
 
+import * as fs from 'fs';
+import * as path from 'path';
+import AdmZip from 'adm-zip';
+import FormData from 'form-data';
+
 // This would be imported from the OpenClaw SDK normally
 declare const api: {
     registerTool: (name: string, definition: any) => void;
@@ -50,6 +55,56 @@ export function activate() {
             required: ["case_id"]
         },
         execute: async (args: any) => callEngine(`/case/status?case_id=${args.case_id}`, "GET")
+    });
+
+    api.registerTool("legalmind.evidence.upload", {
+        description: "Upload a file or folder to LegalMind. Folders are zipped automatically.",
+        parameters: {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "Local path to file or folder" }
+            },
+            required: ["path"]
+        },
+        execute: async (args: any) => {
+            const inputPath = args.path;
+
+            if (!fs.existsSync(inputPath)) {
+                return { error: `Path not found: ${inputPath}` };
+            }
+
+            const formData = new FormData();
+
+            try {
+                const stats = fs.statSync(inputPath);
+
+                if (stats.isDirectory()) {
+                     const zip = new AdmZip();
+                     zip.addLocalFolder(inputPath);
+                     const zipBuffer = zip.toBuffer();
+                     const zipName = `${path.basename(inputPath)}.zip`;
+                     formData.append('file', zipBuffer, { filename: zipName });
+                } else {
+                     const stream = fs.createReadStream(inputPath);
+                     formData.append('file', stream);
+                }
+
+                const response = await fetch(`${ENGINE_URL}/evidence/upload`, {
+                    method: 'POST',
+                    body: formData as any,
+                    headers: formData.getHeaders() as any
+                });
+
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(`Upload failed (${response.status}): ${text}`);
+                }
+
+                return await response.json();
+            } catch (err) {
+                 return { error: (err as Error).message };
+            }
+        }
     });
 
     api.registerTool("legalmind.evidence.register", {
