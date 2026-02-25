@@ -1,6 +1,7 @@
 import uuid
 import docx
 import os
+import re
 import litellm
 from typing import List
 from app.core.stores import CaseContext
@@ -102,5 +103,30 @@ class Discernment:
             claim.expected_modality = "image"
 
     def entity_extractor(self, text: str): pass
-    def priority_scorer(self, claim: Claim): pass
+
+    def priority_scorer(self, claim: Claim):
+        # Base priority is 1
+        score = 1
+        text = claim.text.lower()
+
+        # High priority keywords (+2)
+        # Regex for word boundaries
+        if re.search(r'\b(liable|guilty|breach|negligence|fraud|unlawful|violation|crime|felony|misdemeanor)\b', text):
+            score += 2
+
+        # Medium priority keywords (+1)
+        if re.search(r'\b(damage|loss|injury|harm|cost|expense|fee|penalty|fine|settlement)\b', text):
+            score += 1
+
+        # Monetary values (+1)
+        if re.search(r'\$\d+|\d+\s*(?:usd|dollars)', text):
+            score += 1
+
+        # Claim Type (+1)
+        if claim.type in [ClaimType.DAMAGES, ClaimType.MEDICAL, ClaimType.LEGAL_CITATION]:
+            score += 1
+
+        # Cap at 5
+        claim.priority = min(5, score)
+
     def citation_router(self, claim: Claim): pass
