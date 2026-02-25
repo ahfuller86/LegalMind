@@ -6,6 +6,7 @@ from typing import List
 from app.core.stores import CaseContext
 from app.core.config import load_config
 from app.models import Claim, ClaimType, RoutingDecision
+from eyecite import get_citations
 
 class Discernment:
     def __init__(self, case_context: CaseContext):
@@ -59,6 +60,7 @@ class Discernment:
                         routing=RoutingDecision.VERIFY
                     )
                     self.modality_tagger(claim)
+                    self.citation_router(claim)
                     claims.append(claim)
                 return claims
         except Exception as e:
@@ -81,6 +83,7 @@ class Discernment:
                     routing=RoutingDecision.VERIFY
                 )
                 self.modality_tagger(claim)
+                self.citation_router(claim)
                 claims.append(claim)
         return claims
 
@@ -103,4 +106,12 @@ class Discernment:
 
     def entity_extractor(self, text: str): pass
     def priority_scorer(self, claim: Claim): pass
-    def citation_router(self, claim: Claim): pass
+    def citation_router(self, claim: Claim):
+        try:
+            citations = get_citations(claim.text)
+            if citations:
+                claim.type = ClaimType.LEGAL_CITATION
+                claim.routing = RoutingDecision.CITE_CHECK
+        except Exception:
+            # Fallback for unexpected failures in eyecite
+            pass
