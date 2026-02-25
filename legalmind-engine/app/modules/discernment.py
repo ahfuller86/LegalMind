@@ -1,8 +1,10 @@
 import uuid
 import docx
 import os
+import re
 import litellm
-from typing import List
+from typing import List, Dict, Any
+from eyecite import get_citations, clean_text
 from app.core.stores import CaseContext
 from app.core.config import load_config
 from app.models import Claim, ClaimType, RoutingDecision
@@ -101,6 +103,49 @@ class Discernment:
         elif "photo" in text or "image" in text or "picture" in text:
             claim.expected_modality = "image"
 
-    def entity_extractor(self, text: str): pass
+    def entity_extractor(self, text: str) -> Dict[str, List[str]]:
+        if not text:
+            return {
+                "citations": [],
+                "dates": [],
+                "emails": [],
+                "urls": []
+            }
+
+        # 1. Citations using eyecite
+        cleaned = clean_text(text, ['all_whitespace', 'html'])
+        # Return unique matched text
+        citations = list(set([c.matched_text() for c in get_citations(cleaned)]))
+
+        # 2. Dates
+        # Patterns:
+        # MM/DD/YYYY or MM-DD-YYYY or YYYY-MM-DD
+        date_pattern_numeric = r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b'
+        # YYYY-MM-DD (ISO)
+        date_pattern_iso = r'\b\d{4}-\d{2}-\d{2}\b'
+        # Month DD, YYYY (e.g., January 1, 2024 or Jan. 1, 2024)
+        date_pattern_text = r'\b(?:Jan(?:uary|\.)?|Feb(?:ruary|\.)?|Mar(?:ch|\.)?|Apr(?:il|\.)?|May|Jun(?:e|\.)?|Jul(?:y|\.)?|Aug(?:ust|\.)?|Sep(?:tember|\.|t\.)?|Oct(?:ober|\.)?|Nov(?:ember|\.)?|Dec(?:ember|\.)?)\s+\d{1,2},?\s+\d{4}\b'
+
+        dates = []
+        dates.extend(re.findall(date_pattern_numeric, text))
+        dates.extend(re.findall(date_pattern_iso, text))
+        dates.extend(re.findall(date_pattern_text, text, re.IGNORECASE))
+        # Deduplicate
+        dates = list(set(dates))
+
+        # 3. Emails
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        emails = list(set(re.findall(email_pattern, text)))
+
+        # 4. URLs
+        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w./?%&=]*)?'
+        urls = list(set(re.findall(url_pattern, text)))
+
+        return {
+            "citations": citations,
+            "dates": dates,
+            "emails": emails,
+            "urls": urls
+        }
     def priority_scorer(self, claim: Claim): pass
     def citation_router(self, claim: Claim): pass
