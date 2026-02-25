@@ -4,6 +4,7 @@ import docx
 import shutil
 import os
 import mimetypes
+import tempfile
 from typing import List, Optional
 from PIL import Image
 from app.core.stores import CaseContext
@@ -237,35 +238,41 @@ class Conversion:
                 segment.warnings.append("Refinement failed: ffmpeg-python not installed")
                 return segment
 
-            temp_clip = f"/tmp/{segment.segment_id}.wav"
+            temp_clip = None
 
-            if start is not None and duration:
-                try:
-                    (
-                        ffmpeg
-                        .input(file_path, ss=start, t=duration)
-                        .output(temp_clip)
-                        .run(quiet=True, overwrite_output=True)
-                    )
-                    transcribe_path = temp_clip
-                except ffmpeg.Error as e:
-                    print(f"ffmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
-                    # Fallback to full file? No, that's too heavy for one segment.
-                    segment.warnings.append("Refinement failed: ffmpeg processing error")
-                    return segment
-            else:
-                transcribe_path = file_path
+            try:
+                if start is not None and duration:
+                    # Use a secure temporary file
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                        temp_clip = tmp.name
 
-            result = model.transcribe(transcribe_path)
-            new_text = result["text"].strip()
+                    try:
+                        (
+                            ffmpeg
+                            .input(file_path, ss=start, t=duration)
+                            .output(temp_clip)
+                            .run(quiet=True, overwrite_output=True)
+                        )
+                        transcribe_path = temp_clip
+                    except ffmpeg.Error as e:
+                        print(f"ffmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
+                        # Fallback to full file? No, that's too heavy for one segment.
+                        segment.warnings.append("Refinement failed: ffmpeg processing error")
+                        return segment
+                else:
+                    transcribe_path = file_path
 
-            segment.text = new_text
-            segment.metadata["transcription_quality"] = "final"
-            segment.metadata["model"] = config.WHISPER_MODEL_ACCURATE
-            segment.extraction_method = f"openai-whisper-{config.WHISPER_MODEL_ACCURATE}"
+                result = model.transcribe(transcribe_path)
+                new_text = result["text"].strip()
 
-            if os.path.exists(temp_clip):
-                os.remove(temp_clip)
+                segment.text = new_text
+                segment.metadata["transcription_quality"] = "final"
+                segment.metadata["model"] = config.WHISPER_MODEL_ACCURATE
+                segment.extraction_method = f"openai-whisper-{config.WHISPER_MODEL_ACCURATE}"
+
+            finally:
+                if temp_clip and os.path.exists(temp_clip):
+                    os.remove(temp_clip)
 
         except Exception as e:
             print(f"Refinement failed: {e}")
