@@ -2,6 +2,8 @@ import os
 import json
 import shutil
 import hashlib
+import threading
+import queue
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from app.models import EvidenceSegment, Chunk, RunState, RunStatus
@@ -175,12 +177,40 @@ class RetrievalIndex:
         return []
 
 class AuditLog:
+    _queue = queue.Queue()
+    _worker_thread = None
+    _lock = threading.Lock()
+
     def __init__(self, case_id: str, base_path: str):
         self.case_id = case_id
         self.base_path = base_path
         self.log_path = os.path.join(base_path, "audit_log")
         os.makedirs(self.log_path, exist_ok=True)
         self.log_file = os.path.join(self.log_path, "audit.jsonl")
+
+        # Ensure worker is running
+        self._start_worker()
+
+    @classmethod
+    def _start_worker(cls):
+        if cls._worker_thread is None or not cls._worker_thread.is_alive():
+            with cls._lock:
+                if cls._worker_thread is None or not cls._worker_thread.is_alive():
+                    cls._worker_thread = threading.Thread(target=cls._process_queue, daemon=True)
+                    cls._worker_thread.start()
+
+    @classmethod
+    def _process_queue(cls):
+        while True:
+            file_path, entry_json = cls._queue.get()
+            try:
+                with open(file_path, "a") as f:
+                    f.write(entry_json + "\n")
+            except Exception as e:
+                # In production we might log this to stderr or a fallback
+                print(f"Error writing audit log: {e}")
+            finally:
+                cls._queue.task_done()
 
     def log_event(self, module: str, action: str, details: Dict[str, Any]):
         entry = {
@@ -190,12 +220,13 @@ class AuditLog:
             "action": action,
             "details": details
         }
-        # Print for debug
-        print(f"AUDIT: {json.dumps(entry)}")
+        entry_json = json.dumps(entry)
 
-        # Persist
-        with open(self.log_file, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+        # Print for debug
+        print(f"AUDIT: {entry_json}")
+
+        # Persist asynchronously
+        AuditLog._queue.put((self.log_file, entry_json))
 
 class CaseContext:
     def __init__(self, case_id: str, base_storage_path: str = "./storage"):
