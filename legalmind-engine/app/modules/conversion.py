@@ -394,8 +394,14 @@ class Conversion:
     def _table_to_markdown(self, table: List[List[str]]) -> str:
         if not table:
             return ""
-        # Handle None values in cells
-        cleaned_table = [[cell if cell is not None else "" for cell in row] for row in table]
+
+        def clean_cell(cell):
+            if cell is None:
+                return ""
+            return str(cell).replace("\n", "<br>").replace("|", "\\|")
+
+        # Handle None values and escape special characters
+        cleaned_table = [[clean_cell(cell) for cell in row] for row in table]
 
         # Simple markdown table generator
         if not cleaned_table:
