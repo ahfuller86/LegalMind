@@ -3,7 +3,6 @@ import pdfplumber
 import docx
 import shutil
 import os
-import mimetypes
 from typing import List, Optional
 from PIL import Image
 from app.core.stores import CaseContext
