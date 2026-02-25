@@ -66,10 +66,10 @@ class Intake:
         # Resolve allowed paths
         allowed_prefixes = []
         for p in config.ALLOWED_INPUT_PATHS:
+            # Explicitly ignore relative current directory shorthand for security
             if p == ".":
-                allowed_prefixes.append(os.getcwd())
-            else:
-                allowed_prefixes.append(os.path.abspath(p))
+                continue
+            allowed_prefixes.append(os.path.abspath(p))
 
         is_allowed = any(abs_path.startswith(prefix) for prefix in allowed_prefixes)
 
