@@ -330,16 +330,24 @@ class Dominion:
 
             self.case_context.audit_log.log_event("Dominion", "maintenance_scan", {"found_drafts": total_drafts})
 
-            # 3. Refine sequentially
-            # Since this is "maintenance", we do it sequentially to save resources.
-            for seg in draft_segments:
-                await asyncio.to_thread(self.conversion.refine_transcription, seg)
+            # 3. Refine in parallel using a semaphore to control resource usage
+            sem = asyncio.Semaphore(self.config.MAX_CPU_CONCURRENCY)
+            ledger_lock = asyncio.Lock()
 
-                # Check if upgraded
-                if seg.metadata.get("transcription_quality") == "final":
-                    # Save update
-                    await asyncio.to_thread(self.case_context.ledger.update_segment, seg)
-                    processed_count += 1
+            async def refine_and_update(seg):
+                nonlocal processed_count
+                async with sem:
+                    await asyncio.to_thread(self.conversion.refine_transcription, seg)
+
+                    # Check if upgraded
+                    if seg.metadata.get("transcription_quality") == "final":
+                        # EvidenceLedger.update_segment is not concurrency-safe, so we use a lock
+                        async with ledger_lock:
+                            await asyncio.to_thread(self.case_context.ledger.update_segment, seg)
+                        processed_count += 1
+
+            tasks = [refine_and_update(seg) for seg in draft_segments]
+            await asyncio.gather(*tasks)
 
             self.case_context.audit_log.log_event("Dominion", "maintenance_job_complete", {"processed": processed_count})
 
