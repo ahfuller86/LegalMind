@@ -5,7 +5,7 @@ declare const api: {
     registerTool: (name: string, definition: any) => void;
 };
 
-const ENGINE_URL = "http://localhost:8000/api";
+const ENGINE_URL = process.env.LEGALMIND_ENGINE_URL || "http://localhost:8000/api";
 
 // Helper for making requests
 async function callEngine(endpoint: string, method: string, data?: any) {
