@@ -1,0 +1,144 @@
+# .github/workflows/AutoMerge.yml
+name: Auto-merge PRs & cleanup merged branches
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs daily. Adjust as desired.
+    - cron: "17 06 * * *"
+
+# Needed to merge PRs and delete branches via git push.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: automerge-cleanup
+  cancel-in-progress: false
+
+jobs:
+  automerge_and_cleanup:
+    runs-on: ubuntu-latest
+
+    env:
+      # gh CLI reads GH_TOKEN for auth. github.token == the repo's GITHUB_TOKEN.
+      GH_TOKEN: ${{ github.token }}
+
+      # Choose merge method for PR auto-merge:
+      #   squash | merge | rebase
+      MERGE_METHOD: squash
+
+      # Safety default: don't auto-merge drafts unless you explicitly flip to "true".
+      INCLUDE_DRAFTS: "false"
+
+      # Branches matching this regex will never be deleted (in addition to the default branch).
+      # Add/remove names to fit your repo.
+      KEEP_BRANCH_REGEX: '^(main|master|develop|dev|release|staging|production|gh-pages)$'
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auto-merge all open PRs (enable auto-merge + delete branch after merge)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${MERGE_METHOD}" in
+            squash) merge_flag="--squash" ;;
+            merge)  merge_flag="--merge" ;;
+            rebase) merge_flag="--rebase" ;;
+            *) echo "MERGE_METHOD must be squash|merge|rebase (got: ${MERGE_METHOD})" >&2; exit 1 ;;
+          esac
+
+          echo "Finding open PRs..."
+          # Output format: "<number> <isDraft>"
+          mapfile -t prs < <(gh pr list --state open --limit 200 --json number,isDraft --jq '.[] | "\(.number) \(.isDraft)"')
+
+          if (( ${#prs[@]} == 0 )); then
+            echo "No open PRs found."
+            exit 0
+          fi
+
+          for row in "${prs[@]}"; do
+            pr_number="${row%% *}"
+            is_draft="${row##* }"
+
+            if [[ "${INCLUDE_DRAFTS}" != "true" && "${is_draft}" == "true" ]]; then
+              echo "Skipping draft PR #${pr_number}"
+              continue
+            fi
+
+            echo "Enabling auto-merge for PR #${pr_number} (${MERGE_METHOD}) and deleting branch after merge..."
+            # --auto: enables GitHub auto-merge (merges once requirements are satisfied; may merge immediately if already satisfied)
+            # --delete-branch: deletes the head branch after successful merge (works for same-repo branches; forks can't be deleted)
+            if ! gh pr merge "${pr_number}" ${merge_flag} --auto --delete-branch; then
+              echo "WARN: Could not enable auto-merge for PR #${pr_number} (conflicts, missing checks/reviews, or restrictions)."
+            fi
+          done
+
+      - name: Cleanup: delete branches that are already merged
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          default_branch="$(gh repo view --json defaultBranchRefName -q '.defaultBranchRefName')"
+          echo "Default branch: ${default_branch}"
+
+          # Ensure we have remote refs locally for ancestry checks.
+          git fetch origin --prune --tags
+          git fetch origin "+refs/heads/*:refs/remotes/origin/*" --prune
+
+          # Get all current branch names from GitHub (remote branches that still exist).
+          mapfile -t branches < <(gh api "repos/${GITHUB_REPOSITORY}/branches" --paginate -q '.[].name')
+
+          if (( ${#branches[@]} == 0 )); then
+            echo "No branches returned by GitHub API."
+            exit 0
+          fi
+
+          for branch in "${branches[@]}"; do
+            # Never delete the default branch.
+            if [[ "${branch}" == "${default_branch}" ]]; then
+              continue
+            fi
+
+            # Never delete kept/protected branches.
+            if [[ "${branch}" =~ ${KEEP_BRANCH_REGEX} ]]; then
+              echo "Keeping branch (matches KEEP_BRANCH_REGEX): ${branch}"
+              continue
+            fi
+
+            # Safety: do not delete branches that still have open PRs.
+            open_prs="$(gh pr list --state open --head "${branch}" --json number --jq 'length' || echo 0)"
+            if [[ "${open_prs}" != "0" ]]; then
+              echo "Keeping branch (has open PR): ${branch}"
+              continue
+            fi
+
+            merged_by_pr="0"
+            merged_by_git="0"
+
+            # Detect merged PRs from this head branch into the default branch.
+            # This catches squash merges too (where git ancestry often won't show as merged).
+            merged_prs="$(gh pr list --state merged --head "${branch}" --base "${default_branch}" --json number --jq 'length' || echo 0)"
+            if [[ "${merged_prs}" != "0" ]]; then
+              merged_by_pr="1"
+            fi
+
+            # Git ancestry check catches merge-commit merges or direct merges.
+            if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+              if git merge-base --is-ancestor "origin/${branch}" "origin/${default_branch}"; then
+                merged_by_git="1"
+              fi
+            fi
+
+            if [[ "${merged_by_pr}" == "1" || "${merged_by_git}" == "1" ]]; then
+              echo "Deleting merged branch: ${branch}"
+              git push origin --delete "${branch}" || echo "WARN: Failed to delete ${branch} (protected or already deleted)."
+            else
+              echo "Not deleting (not detected as merged): ${branch}"
+            fi
+          done
