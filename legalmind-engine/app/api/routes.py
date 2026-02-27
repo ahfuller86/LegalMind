@@ -1,5 +1,8 @@
-from fastapi import APIRouter, Depends, Query, HTTPException, Body
+from fastapi import APIRouter, Depends, Query, HTTPException, Body, UploadFile, File
 from typing import Optional, Dict, Any, List
+import shutil
+import os
+import uuid
 from app.core.stores import CaseContext
 from app.modules.dominion import Dominion
 from app.models import RunState, RunStatus, EvidenceSegment, Chunk, Claim, EvidenceBundle, VerificationFinding, CitationFinding, GateResult, RetrievalMode
@@ -40,6 +43,26 @@ async def evidence_register(
         return {"status": "registered", "file_id": file_hash}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/evidence/upload")
+async def evidence_upload(
+    file: UploadFile = File(...)
+):
+    upload_dir = "/tmp/uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # Generate unique filename to prevent path traversal and collision
+    original_ext = os.path.splitext(file.filename)[1] if file.filename else ""
+    safe_filename = f"{uuid.uuid4()}{original_ext}"
+    file_path = os.path.join(upload_dir, safe_filename)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    return {"file_path": file_path, "original_filename": file.filename, "status": "uploaded"}
 
 @router.post("/document/register")
 async def document_register(
