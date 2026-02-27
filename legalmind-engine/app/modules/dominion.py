@@ -298,10 +298,7 @@ class Dominion:
         self.case_context.audit_log.log_event("Dominion", "case_workspace_init_start", {"case_name": case_name})
 
         # Determine base path for cases
-        base_storage = os.path.dirname(self.case_context.base_path)
-        if not base_storage or base_storage == ".":
-            # Fallback if running from root or unexpected path
-            base_storage = "./storage"
+        base_storage = self.config.STORAGE_PATH
 
         # Initialize new context which creates directories
         new_context = CaseContext(case_name, base_storage_path=base_storage)
