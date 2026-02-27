@@ -3,73 +3,101 @@ import sys
 import unittest
 from unittest.mock import patch, MagicMock
 
-# Mock pydantic since it might be missing in the test environment
-mock_pydantic = MagicMock()
-class MockBaseModel:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-mock_pydantic.BaseModel = MockBaseModel
-mock_pydantic.Field = lambda default=None, **kwargs: default
-sys.modules["pydantic"] = mock_pydantic
-
-# Mock heavy dependencies to avoid import errors or side effects during testing
-sys.modules["app.modules.intake"] = MagicMock()
-sys.modules["app.modules.conversion"] = MagicMock()
-sys.modules["app.modules.structuring"] = MagicMock()
-sys.modules["app.modules.preservation"] = MagicMock()
-sys.modules["app.modules.discernment"] = MagicMock()
-sys.modules["app.modules.inquiry"] = MagicMock()
-sys.modules["app.modules.adjudication"] = MagicMock()
-sys.modules["app.modules.chronicle"] = MagicMock()
-sys.modules["app.modules.validation"] = MagicMock()
-sys.modules["app.modules.sentinel"] = MagicMock()
-# Also mock stores if needed, but we might want CaseContext from it
-# app.core.stores is imported in dominion.py
-
-from app.core.config import load_config
-# We need to import Dominion after mocking modules
-from app.modules.dominion import Dominion
 
 class TestConfigStorage(unittest.TestCase):
+    def setUp(self):
+        # Mock pydantic since it might be missing in the test environment
+        self.mock_pydantic = MagicMock()
+
+        class MockBaseModel:
+            def __init__(self, **kwargs):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        self.mock_pydantic.BaseModel = MockBaseModel
+        self.mock_pydantic.Field = lambda default=None, **kwargs: default
+
+        # Modules to patch to avoid heavy imports / side effects during tests
+        self.modules_to_patch = {
+            "pydantic": self.mock_pydantic,
+            "app.core.stores": MagicMock(),
+        }
+
+        for mod in [
+            "intake",
+            "conversion",
+            "structuring",
+            "preservation",
+            "discernment",
+            "inquiry",
+            "adjudication",
+            "chronicle",
+            "validation",
+            "sentinel",
+        ]:
+            self.modules_to_patch[f"app.modules.{mod}"] = MagicMock()
+
+        # Start patching sys.modules
+        self.module_patcher = patch.dict(sys.modules, self.modules_to_patch)
+        self.module_patcher.start()
+
+        # Ensure target modules are re-imported to pick up mocks
+        self._clean_modules()
+
+    def tearDown(self):
+        self._clean_modules()
+        self.module_patcher.stop()
+
+    def _clean_modules(self):
+        # Remove the modules under test from sys.modules so they are re-imported
+        for mod in ["app.core.config", "app.modules.dominion"]:
+            sys.modules.pop(mod, None)
+
     def test_load_config_default(self):
+        from app.core.config import load_config
+
         with patch.dict(os.environ, {}, clear=True):
             config = load_config()
             self.assertEqual(config.STORAGE_PATH, "./storage")
 
     def test_load_config_custom(self):
-        with patch.dict(os.environ, {"LEGALMIND_STORAGE_PATH": "/custom/storage"}):
+        from app.core.config import load_config
+
+        with patch.dict(
+            os.environ, {"LEGALMIND_STORAGE_PATH": "/custom/storage"}, clear=True
+        ):
             config = load_config()
             self.assertEqual(config.STORAGE_PATH, "/custom/storage")
 
-    @patch("app.modules.dominion.CaseContext")
-    @patch("app.modules.dominion.load_config")
-    def test_dominion_uses_configured_path(self, mock_load_config, mock_case_context):
-        # Setup config mock
-        mock_config = MagicMock()
-        mock_config.STORAGE_PATH = "/configured/path"
-        mock_load_config.return_value = mock_config
+    def test_dominion_uses_configured_path(self):
+        from app.modules.dominion import Dominion
 
-        # Mock initial CaseContext
-        initial_context = MagicMock()
-        initial_context.base_path = "/default/storage/case123"
+        with patch("app.modules.dominion.load_config") as mock_load_config, patch(
+            "app.modules.dominion.CaseContext"
+        ) as mock_case_context:
+            mock_config = MagicMock()
+            mock_config.STORAGE_PATH = "/configured/path"
+            mock_load_config.return_value = mock_config
 
-        # Initialize Dominion
-        dominion = Dominion(initial_context)
+            initial_context = MagicMock()
+            initial_context.base_path = "/initial/path"
 
-        # Run async method
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(dominion.case_workspace_init("new_case_name"))
-        finally:
-            loop.close()
+            dominion = Dominion(initial_context)
 
-        # Check that CaseContext was instantiated with the path from config
-        # calls[0] is init, so checking constructor call
-        # Mock class call is checkable
-        mock_case_context.assert_called_with("new_case_name", base_storage_path="/configured/path")
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(dominion.case_workspace_init("new_case_name"))
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+
+            mock_case_context.assert_called_with(
+                "new_case_name", base_storage_path="/configured/path"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
