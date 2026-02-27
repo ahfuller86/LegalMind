@@ -88,9 +88,6 @@ class Discernment:
         boilerplate = ["comes now", "respectfully submitted", "wherefore", "judge", "court"]
         return any(b in text.lower() for b in boilerplate)
 
-    # Stubs
-    def claim_classifier(self, text: str): pass
-
     def modality_tagger(self, claim: Claim):
         # Heuristic tagging
         text = claim.text.lower()
@@ -100,7 +97,3 @@ class Discernment:
             claim.expected_modality = "video"
         elif "photo" in text or "image" in text or "picture" in text:
             claim.expected_modality = "image"
-
-    def entity_extractor(self, text: str): pass
-    def priority_scorer(self, claim: Claim): pass
-    def citation_router(self, claim: Claim): pass
