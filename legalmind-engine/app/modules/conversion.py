@@ -291,21 +291,16 @@ class Conversion:
         if pytesseract and has_tesseract:
             try:
                 image = Image.open(file_path)
-                text = pytesseract.image_to_string(image)
-                if text.strip():
-                    segment = EvidenceSegment(
-                        segment_id=str(uuid.uuid4()),
-                        source_asset_id=source_asset_id,
-                        modality=Modality.OCR_PRINTED, # Assuming printed text in image
-                        location="image_full",
-                        text=text.strip(),
-                        confidence=0.8, # OCR is imperfect
-                        extraction_method="tesseract",
-                        derived=False,
-                        warnings=["OCR used"]
-                    )
+                segment = self._process_ocr_image(
+                    image,
+                    source_asset_id,
+                    location="image_full",
+                    extraction_method="tesseract",
+                    warnings=["OCR used"],
+                    confidence=0.8
+                )
+                if segment:
                     segments.append(segment)
-                    self.case_context.ledger.append_segment(segment)
             except Exception as e:
                 print(f"Error processing image {file_path}: {e}")
         else:
@@ -324,21 +319,16 @@ class Conversion:
         try:
             images = convert_from_path(file_path)
             for i, image in enumerate(images):
-                text = pytesseract.image_to_string(image)
-                if text.strip():
-                    segment = EvidenceSegment(
-                        segment_id=str(uuid.uuid4()),
-                        source_asset_id=source_asset_id,
-                        modality=Modality.OCR_PRINTED,
-                        location=f"page_{i+1}",
-                        text=text.strip(),
-                        confidence=0.85,
-                        extraction_method="tesseract",
-                        derived=False,
-                        warnings=["Scanned Document OCR"]
-                    )
+                segment = self._process_ocr_image(
+                    image,
+                    source_asset_id,
+                    location=f"page_{i+1}",
+                    extraction_method="tesseract",
+                    warnings=["Scanned Document OCR"],
+                    confidence=0.85
+                )
+                if segment:
                     segments.append(segment)
-                    self.case_context.ledger.append_segment(segment)
         except Exception as e:
             print(f"OCR failed for {file_path}: {e}")
 
@@ -355,24 +345,40 @@ class Conversion:
             # pdf2image uses 1-based indexing for first_page/last_page
             images = convert_from_path(file_path, first_page=page_num, last_page=page_num)
             if images:
-                text = pytesseract.image_to_string(images[0])
-                if text.strip():
-                    segment = EvidenceSegment(
-                        segment_id=str(uuid.uuid4()),
-                        source_asset_id=source_asset_id,
-                        modality=Modality.OCR_PRINTED,
-                        location=f"page_{page_num}",
-                        text=text.strip(),
-                        confidence=0.8,
-                        extraction_method="pdf_fallback_ocr",
-                        derived=False,
-                        warnings=["Fallback OCR used"]
-                    )
+                segment = self._process_ocr_image(
+                    images[0],
+                    source_asset_id,
+                    location=f"page_{page_num}",
+                    extraction_method="pdf_fallback_ocr",
+                    warnings=["Fallback OCR used"],
+                    confidence=0.8
+                )
+                if segment:
                     segments.append(segment)
-                    self.case_context.ledger.append_segment(segment)
         except Exception as e:
             print(f"Fallback OCR failed for page {page_num}: {e}")
         return segments
+
+    def _process_ocr_image(self, image: Image.Image, source_asset_id: str, location: str, extraction_method: str, warnings: List[str], confidence: float = 0.8) -> Optional[EvidenceSegment]:
+        try:
+            text = pytesseract.image_to_string(image)
+            if text.strip():
+                segment = EvidenceSegment(
+                    segment_id=str(uuid.uuid4()),
+                    source_asset_id=source_asset_id,
+                    modality=Modality.OCR_PRINTED,
+                    location=location,
+                    text=text.strip(),
+                    confidence=confidence,
+                    extraction_method=extraction_method,
+                    derived=False,
+                    warnings=warnings
+                )
+                self.case_context.ledger.append_segment(segment)
+                return segment
+        except Exception as e:
+            print(f"OCR error for {location}: {e}")
+        return None
 
     def ingest_handwriting(self, file_path: str, source_asset_id: str):
         # Requires Vision LLM. Stub for now.
