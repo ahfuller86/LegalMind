@@ -236,9 +236,10 @@ class Conversion:
                 segment.warnings.append("Refinement failed: ffmpeg-python not installed")
                 return segment
 
-            temp_clip = f"/tmp/{segment.segment_id}.wav"
+            temp_clip = None
 
             if start is not None and duration:
+                temp_clip = f"/tmp/{segment.segment_id}.wav"
                 try:
                     (
                         ffmpeg
@@ -263,7 +264,7 @@ class Conversion:
             segment.metadata["model"] = config.WHISPER_MODEL_ACCURATE
             segment.extraction_method = f"openai-whisper-{config.WHISPER_MODEL_ACCURATE}"
 
-            if os.path.exists(temp_clip):
+            if temp_clip and os.path.exists(temp_clip):
                 os.remove(temp_clip)
 
         except Exception as e:
