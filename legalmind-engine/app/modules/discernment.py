@@ -1,6 +1,8 @@
 import uuid
 import docx
 import os
+import json
+import re
 import litellm
 from typing import List
 from app.core.stores import CaseContext
@@ -43,8 +45,6 @@ class Discernment:
             )
             content = response.choices[0].message.content
             # Parse JSON
-            import json
-            import re
             match = re.search(r'\[.*\]', content, re.DOTALL)
             if match:
                 data = json.loads(match.group(0))
