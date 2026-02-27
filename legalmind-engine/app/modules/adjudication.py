@@ -1,3 +1,4 @@
+import os
 from app.core.stores import CaseContext
 from app.core.config import load_config
 from app.models import Claim, EvidenceBundle, VerificationFinding, VerificationStatus, ConfidenceLevel, Justification
@@ -88,14 +89,18 @@ class Adjudication:
         quotes = []
 
         if bundle.chunks:
-            # Chroma default is L2. Lower is better.
-            best_score = bundle.retrieval_scores[0]
-            if best_score < 1.0:
-                status = VerificationStatus.SUPPORTED
-                confidence = ConfidenceLevel.MEDIUM
-                quotes = [bundle.chunks[0].text]
-            elif best_score < 1.5:
-                status = VerificationStatus.PARTIALLY_SUPPORTED
+            # Check for retrieval scores integrity
+            if not bundle.retrieval_scores:
+                self.case_context.audit_log.log_event("Adjudication", "heuristic_error", {"error": "No scores for chunks", "claim_id": claim.claim_id})
+            else:
+                # Chroma default is L2. Lower is better.
+                best_score = bundle.retrieval_scores[0]
+                if best_score < 1.0:
+                    status = VerificationStatus.SUPPORTED
+                    confidence = ConfidenceLevel.MEDIUM
+                    quotes = [bundle.chunks[0].text]
+                elif best_score < 1.5:
+                    status = VerificationStatus.PARTIALLY_SUPPORTED
 
         return VerificationFinding(
             claim_id=claim.claim_id,
