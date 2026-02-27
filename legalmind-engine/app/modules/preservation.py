@@ -1,6 +1,8 @@
 import os
 import pickle
+import re
 from typing import List, Dict, Any
+from eyecite import get_citations, clean_text
 from app.core.stores import CaseContext
 from app.core.config import load_config
 from app.models import Chunk
@@ -119,8 +121,37 @@ class Preservation:
         with open(self.bm25_path, "wb") as f:
             pickle.dump(self.bm25_index, f)
 
-    def entity_extractor(self, text: str):
-        pass
+    def entity_extractor(self, text: str) -> Dict[str, List[str]]:
+        entities = {
+            "dates": [],
+            "emails": [],
+            "urls": [],
+            "citations": []
+        }
+
+        # Regex for dates
+        # Matches YYYY-MM-DD, MM/DD/YYYY, Month DD, YYYY
+        date_pattern = r'(?:\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}\b)'
+        entities["dates"] = list(set(re.findall(date_pattern, text)))
+
+        # Regex for emails
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        entities["emails"] = list(set(re.findall(email_pattern, text)))
+
+        # Regex for URLs (improved to exclude trailing punctuation)
+        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?<![.,])'
+        entities["urls"] = list(set(re.findall(url_pattern, text)))
+
+        # Citations using eyecite
+        try:
+            cleaned_text = clean_text(text, ['all_whitespace', 'html'])
+            citations = get_citations(cleaned_text)
+            entities["citations"] = list(set([c.matched_text() for c in citations]))
+        except Exception:
+            # Fallback or swallow error to not break pipeline
+            pass
+
+        return entities
 
     def index_health_reporter(self) -> Dict[str, Any]:
         count = self.collection.count()
