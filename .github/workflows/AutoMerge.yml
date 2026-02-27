@@ -7,27 +7,19 @@ on:
       merge_method:
         description: "Merge method to use (squash/merge/rebase)"
         type: choice
-        options:
-          - squash
-          - merge
-          - rebase
+        options: [squash, merge, rebase]
         default: squash
       include_drafts:
         description: "Include draft PRs"
         type: choice
-        options:
-          - "false"
-          - "true"
+        options: ["false", "true"]
         default: "false"
       dry_run:
         description: "Dry run (no merges / no deletions; logs only)"
         type: choice
-        options:
-          - "false"
-          - "true"
-        default: "false"
+        options: ["false", "true"]
+        default: "true"
   schedule:
-    # Runs daily. Adjust as desired.
     - cron: "17 06 * * *"
 
 permissions:
@@ -43,18 +35,13 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # gh CLI reads GH_TOKEN for auth
       GH_TOKEN: ${{ github.token }}
 
-      # Inputs apply on workflow_dispatch; schedule uses defaults below.
       MERGE_METHOD: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.merge_method || 'squash' }}
       INCLUDE_DRAFTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_drafts || 'false' }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
 
-      # Branches matching this regex will never be deleted (in addition to default branch)
       KEEP_BRANCH_REGEX: '^(main|master|develop|dev|release|staging|production|gh-pages)$'
-
-      # Current ref name (safety: don't delete the branch we’re running on)
       RUN_REF: ${{ github.ref_name }}
 
     steps:
@@ -76,7 +63,6 @@ jobs:
           esac
 
           echo "Finding open PRs..."
-          # Output format: "<number> <isDraft>"
           mapfile -t prs < <(gh pr list --state open --limit 200 --json number,isDraft --jq '.[] | "\(.number) \(.isDraft)"')
 
           if (( ${#prs[@]} == 0 )); then
@@ -96,23 +82,23 @@ jobs:
             echo "Processing PR #${pr_number} (method=${MERGE_METHOD}, dry_run=${DRY_RUN})"
 
             if [[ "${DRY_RUN}" == "true" ]]; then
-              echo "DRY RUN: would run: gh pr merge ${pr_number} ${merge_flag} --auto --delete-branch"
-              echo "DRY RUN: (fallback if needed) gh pr merge ${pr_number} ${merge_flag} --delete-branch"
+              echo "DRY RUN: would run: gh pr merge ${pr_number} ${merge_flag} --auto --yes"
+              echo "DRY RUN: (fallback if needed) gh pr merge ${pr_number} ${merge_flag} --yes"
               continue
             fi
 
-            # 1) Try to enable GitHub auto-merge first
-            if output="$(gh pr merge "${pr_number}" ${merge_flag} --auto --delete-branch 2>&1)"; then
+            # Try to enable auto-merge first
+            if output="$(gh pr merge "${pr_number}" ${merge_flag} --auto --yes 2>&1)"; then
               echo "${output}"
               continue
             else
               echo "${output}"
             fi
 
-            # If auto-merge fails because branch protection isn't configured, fall back to immediate merge
+            # If auto-merge can't be enabled due to missing protected branch rules, fall back to immediate merge
             if echo "${output}" | grep -qi "Protected branch rules not configured for this branch"; then
               echo "Auto-merge cannot be enabled (branch protection rules not configured). Attempting immediate merge for PR #${pr_number}..."
-              if ! gh pr merge "${pr_number}" ${merge_flag} --delete-branch; then
+              if ! gh pr merge "${pr_number}" ${merge_flag} --yes; then
                 echo "WARN: Immediate merge also failed for PR #${pr_number} (may need approvals/checks/conflict resolution)."
               fi
             else
@@ -125,7 +111,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # More stable than `gh repo view --json defaultBranchRefName ...`
           default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" -q '.default_branch')"
           echo "Default branch: ${default_branch}"
           echo "Workflow running on ref: ${RUN_REF}"
@@ -146,7 +131,7 @@ jobs:
               continue
             fi
 
-            # Safety: don't delete the branch we’re running from
+            # Safety: don't delete the branch we're running from
             if [[ "${branch}" == "${RUN_REF}" ]]; then
               echo "Keeping branch (current workflow ref): ${branch}"
               continue
@@ -158,8 +143,8 @@ jobs:
               continue
             fi
 
-            # Don't delete branches with open PRs
-            open_prs="$(gh pr list --state open --head "${branch}" --json number --jq 'length' || echo 0)"
+            # Don't delete branches with open PRs (limit=1 is enough)
+            open_prs="$(gh pr list --state open --head "${branch}" --limit 1 --json number --jq 'length' || echo 0)"
             if [[ "${open_prs}" != "0" ]]; then
               echo "Keeping branch (has open PR): ${branch}"
               continue
@@ -168,13 +153,13 @@ jobs:
             merged_by_pr="0"
             merged_by_git="0"
 
-            # If there's ANY merged PR from this head branch, it's safe to delete (no base filter).
-            merged_prs="$(gh pr list --state merged --head "${branch}" --json number --jq 'length' || echo 0)"
+            # Only treat as merged if it merged into the default branch (limit=1 is enough)
+            merged_prs="$(gh pr list --state merged --head "${branch}" --base "${default_branch}" --limit 1 --json number --jq 'length' || echo 0)"
             if [[ "${merged_prs}" != "0" ]]; then
               merged_by_pr="1"
             fi
 
-            # Git ancestry check catches merge-commit merges or direct merges into default branch
+            # Git ancestry check (handles merge commits / direct merges)
             if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
               if git merge-base --is-ancestor "origin/${branch}" "origin/${default_branch}"; then
                 merged_by_git="1"
@@ -189,6 +174,6 @@ jobs:
                 git push origin --delete "${branch}" || echo "WARN: Failed to delete ${branch} (protected or already deleted)."
               fi
             else
-              echo "Not deleting (not detected as merged): ${branch}"
+              echo "Not deleting (not detected as merged into ${default_branch}): ${branch}"
             fi
           done
