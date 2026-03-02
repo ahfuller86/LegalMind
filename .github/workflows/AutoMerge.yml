@@ -19,6 +19,10 @@ on:
         type: choice
         options: ["false", "true"]
         default: "true"
+      automerge_label:
+        description: "Only process PRs with this label (recommended)"
+        type: string
+        default: "automerge"
   schedule:
     - cron: "17 06 * * *"
 
@@ -37,9 +41,15 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
 
+      # Inputs for workflow_dispatch, safe defaults for schedule.
       MERGE_METHOD: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.merge_method || 'squash' }}
       INCLUDE_DRAFTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_drafts || 'false' }}
-      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
+
+      # Scheduled runs should be dry-run by default.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'true' }}
+
+      # Label gating to avoid merging everything.
+      AUTOMERGE_LABEL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.automerge_label || 'automerge' }}
 
       KEEP_BRANCH_REGEX: '^(main|master|develop|dev|release|staging|production|gh-pages)$'
       RUN_REF: ${{ github.ref_name }}
@@ -50,7 +60,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Auto-merge all open PRs (enable auto-merge; fallback to immediate merge)
+      - name: Verify GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh --version
+          gh pr merge --help >/dev/null
+
+      - name: Auto-merge eligible PRs (label-gated; enable auto-merge)
         shell: bash
         run: |
           set -euo pipefail
@@ -62,47 +79,65 @@ jobs:
             *) echo "MERGE_METHOD must be squash|merge|rebase (got: ${MERGE_METHOD})" >&2; exit 1 ;;
           esac
 
-          echo "Finding open PRs..."
-          mapfile -t prs < <(gh pr list --state open --limit 200 --json number,isDraft --jq '.[] | "\(.number) \(.isDraft)"')
+          echo "Finding open PRs with label='${AUTOMERGE_LABEL}'..."
+          mapfile -t prs < <(
+            gh pr list \
+              --state open \
+              --label "${AUTOMERGE_LABEL}" \
+              --limit 200 \
+              --json number,isDraft,mergeable,baseRefName,title,url \
+              --jq '.[] | "\(.number)\t\(.isDraft)\t\(.mergeable)\t\(.baseRefName)\t\(.title)\t\(.url)"'
+          )
 
           if (( ${#prs[@]} == 0 )); then
-            echo "No open PRs found."
+            echo "No labeled open PRs found."
             exit 0
           fi
 
           for row in "${prs[@]}"; do
-            pr_number="${row%% *}"
-            is_draft="${row##* }"
+            IFS=$'\t' read -r pr_number is_draft mergeable base_ref title url <<< "${row}"
 
             if [[ "${INCLUDE_DRAFTS}" != "true" && "${is_draft}" == "true" ]]; then
-              echo "Skipping draft PR #${pr_number}"
+              echo "Skipping draft PR #${pr_number}: ${title}"
               continue
             fi
 
-            echo "Processing PR #${pr_number} (method=${MERGE_METHOD}, dry_run=${DRY_RUN})"
+            # mergeable can be: MERGEABLE, CONFLICTING, UNKNOWN (GitHub may report UNKNOWN transiently)
+            if [[ "${mergeable}" == "CONFLICTING" ]]; then
+              echo "Skipping PR #${pr_number} (conflicts): ${url}"
+              continue
+            fi
+
+            echo "Processing PR #${pr_number} -> base=${base_ref} mergeable=${mergeable} method=${MERGE_METHOD} dry_run=${DRY_RUN}"
+            echo "  ${title}"
+            echo "  ${url}"
 
             if [[ "${DRY_RUN}" == "true" ]]; then
-              echo "DRY RUN: would run: gh pr merge ${pr_number} ${merge_flag} --auto --yes"
-              echo "DRY RUN: (fallback if needed) gh pr merge ${pr_number} ${merge_flag} --yes"
+              echo "DRY RUN: would run: gh pr merge ${pr_number} ${merge_flag} --auto"
+              echo "DRY RUN: (fallback) gh pr merge ${pr_number} ${merge_flag}"
               continue
             fi
 
-            # Try to enable auto-merge first
-            if output="$(gh pr merge "${pr_number}" ${merge_flag} --auto --yes 2>&1)"; then
+            # Try to enable auto-merge first (preferred; respects branch protections/required checks).
+            if output="$(gh pr merge "${pr_number}" ${merge_flag} --auto 2>&1)"; then
               echo "${output}"
               continue
             else
               echo "${output}"
             fi
 
-            # If auto-merge can't be enabled due to missing protected branch rules, fall back to immediate merge
+            # If auto-merge can't be enabled due to missing branch protection, fallback to immediate merge.
+            # (Still subject to GitHub permissions; consider removing fallback if you want strict protection.)
             if echo "${output}" | grep -qi "Protected branch rules not configured for this branch"; then
-              echo "Auto-merge cannot be enabled (branch protection rules not configured). Attempting immediate merge for PR #${pr_number}..."
-              if ! gh pr merge "${pr_number}" ${merge_flag} --yes; then
-                echo "WARN: Immediate merge also failed for PR #${pr_number} (may need approvals/checks/conflict resolution)."
+              echo "Auto-merge cannot be enabled (no branch protection). Attempting immediate merge for PR #${pr_number}..."
+              if ! output2="$(gh pr merge "${pr_number}" ${merge_flag} 2>&1)"; then
+                echo "${output2}"
+                echo "WARN: Immediate merge failed for PR #${pr_number} (likely needs approvals/checks/conflict resolution)."
+              else
+                echo "${output2}"
               fi
             else
-              echo "WARN: Could not enable auto-merge for PR #${pr_number} (conflicts, missing checks/reviews, restrictions, or other error)."
+              echo "WARN: Could not enable auto-merge for PR #${pr_number} (likely missing checks/reviews, restrictions, or transient GitHub state)."
             fi
           done
 
@@ -114,6 +149,7 @@ jobs:
           default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" -q '.default_branch')"
           echo "Default branch: ${default_branch}"
           echo "Workflow running on ref: ${RUN_REF}"
+          echo "DRY_RUN=${DRY_RUN}"
 
           git fetch origin --prune --tags
           git fetch origin "+refs/heads/*:refs/remotes/origin/*" --prune
