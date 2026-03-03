@@ -1,6 +1,8 @@
 import os
+import json
 import shutil
 import docx
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from jinja2 import Template
 from app.core.stores import CaseContext
@@ -19,6 +21,7 @@ class Chronicle:
         # Render others
         self.docx_renderer(findings, citation_findings, gate_result)
         self.pdf_renderer(html_path)
+        self.transparency_writer(findings, citation_findings, gate_result)
 
         return html_path
 
@@ -146,6 +149,28 @@ class Chronicle:
 
     def executive_summarizer(self, findings: Any): pass
     def quality_dashboard(self): pass
-    def transparency_writer(self): pass
+    def transparency_writer(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]], gate_result: Optional[GateResult]):
+        """
+        Writes a machine-readable transparency report (JSON) containing system configuration,
+        decision logic, and audit trail references.
+        """
+        report = {
+            "timestamp": datetime.now().isoformat(),
+            "engine_version": "3.0",
+            "model": self.config.LLM_PROVIDER,
+            "retrieval_mode": "hybrid",
+            "findings": [f.model_dump() for f in findings],
+            "citation_findings": [c.model_dump() if c else {} for c in (citation_findings or [])],
+            "gate_result": gate_result.model_dump() if gate_result else None
+        }
+
+        if gate_result:
+            report.update(gate_result.config_snapshot)
+
+        path = os.path.join(self.case_context.base_path, "transparency.json")
+        with open(path, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+
+        return path
     def media_indexer(self): pass
     def timestamp_service(self): pass
