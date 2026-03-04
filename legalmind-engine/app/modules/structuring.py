@@ -47,7 +47,7 @@ class Structuring:
         def protect_match(match):
             return match.group(0).replace('.', '<DOT>')
 
-        protected = re.sub(r'(?i)\b(?:v|id|no|see|cf|e\.g|i\.e|u\.s|ref)\.', protect_match, text)
+        protected = re.sub(r'(?i)\b(?:u\.s\.a|u\.s|v|id|no|see|cf|e\.g|i\.e|ref|inc|corp|ltd|stat|fed|supp|ex|viz|vol|p|pp)\.', protect_match, text)
         sentences = re.split(r'(?<=[.!?])\s+', protected)
         sentences = [s.replace('<DOT>', '.') for s in sentences]
         return [s.strip() for s in sentences if s.strip()]
