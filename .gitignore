@@ -8,3 +8,6 @@ dist/
 .DS_Store
 *.env
 storage/
+legalmind_agent_package.zip
+antigravity_upload_package
+legalmind-tools/dist
