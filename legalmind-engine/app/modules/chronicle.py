@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import docx
 from typing import Dict, Any, List, Optional
@@ -145,7 +146,120 @@ class Chronicle:
         return path
 
     def executive_summarizer(self, findings: Any): pass
-    def quality_dashboard(self): pass
+
+    def quality_dashboard(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]] = None, gate_result: Optional[GateResult] = None) -> str:
+        # Calculate stats
+        total_claims = len(findings)
+        supported_claims = sum(1 for f in findings if f.status.value == "Supported")
+        partially_supported_claims = sum(1 for f in findings if f.status.value == "Partially Supported")
+        not_supported_claims = sum(1 for f in findings if f.status.value == "Not Supported")
+        contradicted_claims = sum(1 for f in findings if f.status.value == "Contradicted")
+        review_claims = sum(1 for f in findings if f.status.value == "Needs Manual Review")
+
+        total_citations = len(citation_findings) if citation_findings else 0
+        verified_citations = sum(1 for c in citation_findings if c.status.value == "Verified") if citation_findings else 0
+        not_found_citations = sum(1 for c in citation_findings if c.status.value == "Not Found") if citation_findings else 0
+
+        stats = {
+            "total_claims": total_claims,
+            "supported_claims": supported_claims,
+            "partially_supported_claims": partially_supported_claims,
+            "not_supported_claims": not_supported_claims,
+            "contradicted_claims": contradicted_claims,
+            "review_claims": review_claims,
+            "total_citations": total_citations,
+            "verified_citations": verified_citations,
+            "not_found_citations": not_found_citations,
+            "risk_score": gate_result.risk_score if gate_result else 0.0,
+            "filing_recommendation": gate_result.filing_recommendation.value if gate_result else "N/A"
+        }
+
+        # Save JSON
+        json_path = os.path.join(self.case_context.base_path, "dashboard.json")
+        with open(json_path, "w") as f:
+            json.dump(stats, f, indent=2)
+
+        # Render HTML
+        template_str = """
+        <html>
+        <head>
+            <title>LegalMind Quality Dashboard</title>
+            <style>
+                body { font-family: sans-serif; background-color: #f4f4f9; color: #333; }
+                .container { width: 80%; margin: 0 auto; padding: 20px; }
+                .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                h1, h2 { color: #2c3e50; }
+                .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+                .stat-box { background: #eef2f3; padding: 15px; border-radius: 5px; text-align: center; }
+                .stat-value { font-size: 2em; font-weight: bold; color: #3498db; }
+                .stat-label { font-size: 0.9em; color: #7f8c8d; }
+                .risk-score { font-size: 2.5em; font-weight: bold; color: {{ 'red' if stats.risk_score > 50 else 'orange' if stats.risk_score > 20 else 'green' }}; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Quality Dashboard</h1>
+
+                <div class="card">
+                    <h2>Overall Risk</h2>
+                    <div style="text-align: center;">
+                        <div>Risk Score: <span class="risk-score">{{ stats.risk_score }}</span></div>
+                        <p>Recommendation: <strong>{{ stats.filing_recommendation }}</strong></p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Claim Verification</h2>
+                    <div class="stat-grid">
+                        <div class="stat-box">
+                            <div class="stat-value">{{ stats.total_claims }}</div>
+                            <div class="stat-label">Total Claims</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">{{ stats.supported_claims }}</div>
+                            <div class="stat-label">Supported</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">{{ stats.contradicted_claims }}</div>
+                            <div class="stat-label">Contradicted</div>
+                        </div>
+                         <div class="stat-box">
+                            <div class="stat-value">{{ stats.not_supported_claims }}</div>
+                            <div class="stat-label">Not Supported</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Citation Analysis</h2>
+                     <div class="stat-grid">
+                        <div class="stat-box">
+                            <div class="stat-value">{{ stats.total_citations }}</div>
+                            <div class="stat-label">Total Citations</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">{{ stats.verified_citations }}</div>
+                            <div class="stat-label">Verified</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value">{{ stats.not_found_citations }}</div>
+                            <div class="stat-label">Not Found</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        template = Template(template_str)
+        html = template.render(stats=stats)
+
+        html_path = os.path.join(self.case_context.base_path, "dashboard.html")
+        with open(html_path, "w") as f:
+            f.write(html)
+
+        return html_path
+
     def transparency_writer(self): pass
     def media_indexer(self): pass
     def timestamp_service(self): pass
