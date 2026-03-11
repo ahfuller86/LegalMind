@@ -7,6 +7,7 @@ from app.models import RunState, RunStatus, EvidenceSegment, Chunk, Claim, Evide
 router = APIRouter()
 
 from functools import lru_cache
+from fastapi.concurrency import run_in_threadpool
 
 @lru_cache()
 def get_cached_dominion(case_id: str):
@@ -135,7 +136,7 @@ async def retrieve_hybrid(
         priority=1,
         routing=RoutingDecision.VERIFY
     )
-    return dominion.inquiry.retrieve_evidence(claim)
+    return await run_in_threadpool(dominion.inquiry.retrieve_evidence, claim)
 
 @router.post("/verify/claim", response_model=RunState)
 async def verify_claim(
