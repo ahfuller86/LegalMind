@@ -3,7 +3,7 @@ import os
 import pickle
 import chromadb
 from chromadb.utils import embedding_functions
-from typing import List, Any, Dict, Tuple
+from typing import List, Any, Dict, Tuple, Optional
 from app.core.stores import CaseContext
 from app.models import Claim, EvidenceBundle, RetrievalMode, Chunk
 
@@ -36,12 +36,8 @@ class Inquiry:
         ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
         collection = client.get_or_create_collection(name=f"case_{self.case_context.case_id}", embedding_function=ef)
 
-        where_filter = None
-        if claim.expected_modality:
-            if claim.expected_modality == "video":
-                where_filter = {"modality": "video_transcript"}
-            elif claim.expected_modality == "testimony":
-                where_filter = {"modality": "audio_transcript"}
+        target_modality = self.modality_filter(claim)
+        where_filter = {"modality": target_modality} if target_modality else None
 
         results = collection.query(
             query_texts=[claim.text],
@@ -92,16 +88,16 @@ class Inquiry:
         top_indices = np.argsort(scores)[::-1][:top_n]
 
         hits = []
+        target_modality = self.modality_filter(claim)
+
         for idx in top_indices:
             score = scores[idx]
             if score > 0:
                 chunk = all_chunks[idx]
                 # Apply modality filter manually since BM25 library doesn't support metadata filtering natively
-                if claim.expected_modality:
+                if target_modality:
                      modality = str(chunk.metadata.get("modality", ""))
-                     if claim.expected_modality == "video" and modality != "video_transcript":
-                         continue
-                     if claim.expected_modality == "testimony" and modality != "audio_transcript":
+                     if modality != target_modality:
                          continue
 
                 chunk.chunk_method = "retrieved_bm25"
@@ -130,7 +126,18 @@ class Inquiry:
         return merged_chunks, merged_scores
 
     def query_builder(self, claim: Claim): pass
-    def modality_filter(self, claim: Claim): pass
+
+    def modality_filter(self, claim: Claim) -> Optional[str]:
+        if not claim.expected_modality:
+            return None
+
+        if claim.expected_modality == "video":
+            return "video_transcript"
+        elif claim.expected_modality == "testimony":
+            return "audio_transcript"
+
+        return None
+
     def reranker(self, results: List[Any]): pass
     def context_expander(self, chunks: List[Any]): pass
     def contradiction_hunter(self, claim: Claim): pass
