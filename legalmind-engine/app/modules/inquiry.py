@@ -10,6 +10,10 @@ from app.models import Claim, EvidenceBundle, RetrievalMode, Chunk
 class Inquiry:
     def __init__(self, case_context: CaseContext):
         self.case_context = case_context
+        # Initialize ChromaDB client and embedding function once
+        self.client = chromadb.PersistentClient(path=os.path.join(self.case_context.index.index_path, "chroma"))
+        self.ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        self.collection = self.client.get_or_create_collection(name=f"case_{self.case_context.case_id}", embedding_function=self.ef)
 
     def retrieve_evidence(self, claim: Claim) -> EvidenceBundle:
         # 1. Dense Retrieval (Chroma)
@@ -32,9 +36,8 @@ class Inquiry:
         )
 
     def _dense_search(self, claim: Claim) -> List[Tuple[Chunk, float]]:
-        client = chromadb.PersistentClient(path=os.path.join(self.case_context.index.index_path, "chroma"))
-        ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-        collection = client.get_or_create_collection(name=f"case_{self.case_context.case_id}", embedding_function=ef)
+        # Use cached collection
+        collection = self.collection
 
         where_filter = None
         if claim.expected_modality:
