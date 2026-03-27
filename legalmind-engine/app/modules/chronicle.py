@@ -1,6 +1,7 @@
 import os
 import shutil
 import docx
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from jinja2 import Template
 from app.core.stores import CaseContext
@@ -13,16 +14,18 @@ class Chronicle:
         self.config = load_config()
 
     def render_report(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]] = None, gate_result: Optional[GateResult] = None) -> str:
+        timestamp = self.timestamp_service()
+
         # Default to HTML
-        html_path = self.html_renderer(findings, citation_findings, gate_result)
+        html_path = self.html_renderer(findings, citation_findings, gate_result, timestamp)
 
         # Render others
-        self.docx_renderer(findings, citation_findings, gate_result)
+        self.docx_renderer(findings, citation_findings, gate_result, timestamp)
         self.pdf_renderer(html_path)
 
         return html_path
 
-    def html_renderer(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]], gate_result: Optional[GateResult]) -> str:
+    def html_renderer(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]], gate_result: Optional[GateResult], timestamp: str) -> str:
         template_str = """
         <html>
         <head>
@@ -77,6 +80,7 @@ class Chronicle:
 
             <div class="transparency">
                 <h3>System Transparency</h3>
+                <p>Report Generated: {{ timestamp }}</p>
                 {% if gate_result %}
                 <p>Engine Version: {{ gate_result.config_snapshot.engine_version }}</p>
                 <p>Model: {{ gate_result.config_snapshot.model }}</p>
@@ -96,6 +100,7 @@ class Chronicle:
             findings=findings,
             citation_findings=citation_findings,
             gate_result=gate_result,
+            timestamp=timestamp,
             config=self.config,
             export_raw=self.config.EXPORT_RAW_EVIDENCE
         )
@@ -105,9 +110,10 @@ class Chronicle:
             f.write(html)
         return report_path
 
-    def docx_renderer(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]], gate_result: Optional[GateResult]):
+    def docx_renderer(self, findings: List[VerificationFinding], citation_findings: Optional[List[CitationFinding]], gate_result: Optional[GateResult], timestamp: str):
         doc = docx.Document()
         doc.add_heading("LegalMind Audit Report", 0)
+        doc.add_paragraph(f"Report Generated: {timestamp}")
 
         if gate_result:
             doc.add_heading("Pre-Filing Gate", 1)
@@ -148,4 +154,5 @@ class Chronicle:
     def quality_dashboard(self): pass
     def transparency_writer(self): pass
     def media_indexer(self): pass
-    def timestamp_service(self): pass
+    def timestamp_service(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
