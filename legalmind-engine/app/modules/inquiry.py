@@ -10,6 +10,7 @@ from app.models import Claim, EvidenceBundle, RetrievalMode, Chunk
 class Inquiry:
     def __init__(self, case_context: CaseContext):
         self.case_context = case_context
+        self._cross_encoder = None
 
     def retrieve_evidence(self, claim: Claim) -> EvidenceBundle:
         # 1. Dense Retrieval (Chroma)
@@ -20,6 +21,17 @@ class Inquiry:
 
         # 3. RRF Fusion
         merged_chunks, merged_scores = self.rrf_merger(dense_results, sparse_results)
+
+        # 4. Reranking
+        try:
+            merged_results = list(zip(merged_chunks, merged_scores))
+            reranked_results = self.reranker(merged_results, claim)
+            if reranked_results:
+                merged_chunks = [r[0] for r in reranked_results]
+                merged_scores = [r[1] for r in reranked_results]
+        except Exception:
+            # Fallback to RRF results if reranking fails
+            pass
 
         return EvidenceBundle(
             bundle_id=str(uuid.uuid4()),
@@ -131,6 +143,38 @@ class Inquiry:
 
     def query_builder(self, claim: Claim): pass
     def modality_filter(self, claim: Claim): pass
-    def reranker(self, results: List[Any]): pass
+    def reranker(self, results: List[Tuple[Chunk, float]], claim: Claim) -> List[Tuple[Chunk, float]]:
+        """
+        Reranks the results using a CrossEncoder.
+        """
+        if not results:
+            return []
+
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError:
+            # Graceful degradation if dependency is missing
+            return results
+
+        if self._cross_encoder is None:
+            # Load model lazily
+            # Using a standard lightweight cross-encoder
+            self._cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+        # Prepare pairs for cross-encoder: (query, document_text)
+        pairs = [[claim.text, chunk.text] for chunk, _ in results]
+
+        # Predict scores
+        scores = self._cross_encoder.predict(pairs)
+
+        # Update scores and sort
+        reranked = []
+        for i, (chunk, _) in enumerate(results):
+            reranked.append((chunk, float(scores[i])))
+
+        # Sort by score descending
+        reranked.sort(key=lambda x: x[1], reverse=True)
+
+        return reranked
     def context_expander(self, chunks: List[Any]): pass
     def contradiction_hunter(self, claim: Claim): pass
