@@ -1,11 +1,13 @@
 import os
 import shutil
 import docx
+import json
+from collections import defaultdict
 from typing import Dict, Any, List, Optional
 from jinja2 import Template
 from app.core.stores import CaseContext
 from app.core.config import Config, load_config
-from app.models import GateResult, VerificationFinding, CitationFinding, FilingRecommendation
+from app.models import GateResult, VerificationFinding, CitationFinding, FilingRecommendation, Modality
 
 class Chronicle:
     def __init__(self, case_context: CaseContext):
@@ -147,5 +149,82 @@ class Chronicle:
     def executive_summarizer(self, findings: Any): pass
     def quality_dashboard(self): pass
     def transparency_writer(self): pass
-    def media_indexer(self): pass
+    def media_indexer(self) -> str:
+        """
+        Scans the case ledger and manifest to create an index of all media assets
+        (audio, video, images) with their associated segments and metadata.
+        Generates a media_index.json file in the case directory.
+        """
+        media_index_path = os.path.join(self.case_context.base_path, "media_index.json")
+        manifest_path = os.path.join(self.case_context.base_path, "manifest.json")
+
+        # Load manifest
+        manifest_map = {}
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r") as f:
+                try:
+                    manifest_data = json.load(f)
+                    for entry in manifest_data:
+                        manifest_map[entry.get("file_id")] = entry
+                except json.JSONDecodeError:
+                    pass
+
+        # Group segments by asset
+        segments = self.case_context.ledger.get_all_segments()
+        asset_segments = defaultdict(list)
+        for seg in segments:
+            asset_segments[seg.source_asset_id].append(seg)
+
+        media_assets = {
+            "audio": [],
+            "video": [],
+            "images": []
+        }
+
+        for asset_id, segs in asset_segments.items():
+            # determine type
+            is_media = False
+            category = None
+
+            # Check manifest first
+            if asset_id in manifest_map:
+                mime = manifest_map[asset_id].get("mime_type", "")
+                if mime.startswith("audio/"):
+                    category = "audio"
+                    is_media = True
+                elif mime.startswith("video/"):
+                    category = "video"
+                    is_media = True
+                elif mime.startswith("image/"):
+                    category = "images"
+                    is_media = True
+
+            # Fallback to modality inference
+            if not is_media:
+                modalities = {s.modality for s in segs}
+                if Modality.AUDIO_TRANSCRIPT in modalities:
+                    category = "audio"
+                    is_media = True
+                elif Modality.VIDEO_TRANSCRIPT in modalities or Modality.FRAME_OCR in modalities:
+                    category = "video"
+                    is_media = True
+                elif Modality.IMAGE_CAPTION in modalities:
+                    category = "images"
+                    is_media = True
+
+            if is_media and category:
+                asset_info = {
+                    "asset_id": asset_id,
+                    "filename": manifest_map.get(asset_id, {}).get("original_name", "unknown"),
+                    "mime_type": manifest_map.get(asset_id, {}).get("mime_type", "application/octet-stream"),
+                    "segment_count": len(segs),
+                    "modalities": list({s.modality.value for s in segs}),
+                    "metadata": segs[0].metadata if segs else {}
+                }
+                media_assets[category].append(asset_info)
+
+        with open(media_index_path, "w") as f:
+            json.dump(media_assets, f, indent=2)
+
+        return media_index_path
     def timestamp_service(self): pass
