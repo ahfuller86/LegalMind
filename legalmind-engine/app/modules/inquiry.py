@@ -2,10 +2,12 @@ import uuid
 import os
 import pickle
 import chromadb
+import litellm
 from chromadb.utils import embedding_functions
 from typing import List, Any, Dict, Tuple
 from app.core.stores import CaseContext
 from app.models import Claim, EvidenceBundle, RetrievalMode, Chunk
+from app.core.config import load_config
 
 class Inquiry:
     def __init__(self, case_context: CaseContext):
@@ -133,4 +135,58 @@ class Inquiry:
     def modality_filter(self, claim: Claim): pass
     def reranker(self, results: List[Any]): pass
     def context_expander(self, chunks: List[Any]): pass
-    def contradiction_hunter(self, claim: Claim): pass
+    def contradiction_hunter(self, claim: Claim) -> List[Chunk]:
+        """
+        Attempts to find evidence that contradicts the claim.
+        Uses an LLM to generate a negated version of the claim if possible,
+        otherwise falls back to a simple negation heuristic.
+        Then performs a dense search with the negated text.
+        """
+        config = load_config()
+        negated_text = ""
+        use_llm = False
+
+        # Determine if we can use LLM
+        if config.CLOUD_MODEL_ALLOWED:
+            use_llm = True
+        elif config.LLM_PROVIDER != "openai":
+            # Assume local/private provider is safe/configured
+            use_llm = True
+
+        # Check API key if needed (simplistic check)
+        if use_llm and config.LLM_PROVIDER == "openai" and not os.getenv("OPENAI_API_KEY"):
+            use_llm = False
+
+        if use_llm:
+            try:
+                prompt = f"Generate a single sentence that directly contradicts the following claim. Do not add any other text.\\nClaim: {claim.text}"
+                response = litellm.completion(
+                    model=config.LLM_MODEL_NAME,
+                    messages=[{"role": "user", "content": prompt}],
+                    api_base="http://localhost:1234/v1" if config.LLM_PROVIDER == "lmstudio" else None,
+                )
+                if response.choices and response.choices[0].message:
+                    negated_text = response.choices[0].message.content.strip()
+            except Exception:
+                # Fallback silently on error
+                pass
+
+        if not negated_text:
+            # Fallback heuristic
+            negated_text = f"NOT {claim.text}"
+
+        # Create a temporary claim for search
+        negated_claim = claim.model_copy()
+        negated_claim.text = negated_text
+
+        # Perform search using the existing dense search method
+        # _dense_search returns List[Tuple[Chunk, float]]
+        results = self._dense_search(negated_claim)
+
+        chunks = []
+        for chunk, score in results:
+            # Mark the method so downstream consumers know the origin
+            chunk.chunk_method = "contradiction_hunter"
+            chunks.append(chunk)
+
+        return chunks
